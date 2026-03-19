@@ -1,0 +1,22 @@
+{
+    "name": "VRLicensing.Runtime",
+    "rootNamespace": "VRLicensing",
+    "references": [
+        "Unity.TextMeshPro"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.meta.xr.sdk.core",
+            "expression": "",
+            "define": "USE_OCULUS_SDK"
+        }
+    ],
+    "noEngineReferences": false
+}

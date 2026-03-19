@@ -1,0 +1,12 @@
+{
+    "name": "com.blixstudios.vr-licensing",
+    "version": "1.0.0",
+    "displayName": "VR Licensing System",
+    "description": "Módulo genérico de licencias y registro de claves para simuladores VR.",
+    "unity": "6000.0",
+    "author": {
+        "name": "Tu Nombre",
+        "email": "contacto@blixstudios.com"
+    },
+    "dependencies": {}
+}
