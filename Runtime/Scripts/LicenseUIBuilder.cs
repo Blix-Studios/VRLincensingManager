@@ -121,7 +121,7 @@ namespace VRLicensing
 
             int minutes = Mathf.FloorToInt(remainingSeconds / 60f);
             int seconds = Mathf.FloorToInt(remainingSeconds % 60f);
-            demoTimerText.text = $"⏱ Modo Demo: {minutes:00}:{seconds:00} restantes";
+            demoTimerText.text = $"Modo Demo: {minutes:00}:{seconds:00} restantes";
 
             // Change color when running low (< 5 min)
             demoTimerText.color = remainingSeconds < 300f ? COLOR_ERROR : COLOR_TEXT_DIM;
@@ -212,7 +212,20 @@ namespace VRLicensing
                 var esGo = new GameObject("[EventSystem]");
                 esGo.transform.SetParent(transform);
                 esGo.AddComponent<EventSystem>();
-                esGo.AddComponent<StandaloneInputModule>();
+
+                // Use new Input System's UI module if available, otherwise fall back to legacy
+                var inputSystemUIType = Type.GetType(
+                    "UnityEngine.InputSystem.UI.InputSystemUIInputModule, Unity.InputSystem");
+                if (inputSystemUIType != null)
+                {
+                    esGo.AddComponent(inputSystemUIType);
+                    Debug.Log("[VR Licensing] InputSystemUIInputModule agregado (nuevo Input System detectado).");
+                }
+                else
+                {
+                    esGo.AddComponent<StandaloneInputModule>();
+                    Debug.Log("[VR Licensing] StandaloneInputModule agregado (Input System legacy).");
+                }
             }
         }
 
@@ -284,7 +297,7 @@ namespace VRLicensing
 
             // Lock icon + Title
             titleText = CreateTMPText("Title", headerRt,
-                $"🔒  {config.appDisplayName}",
+                $"{config.appDisplayName}",
                 24, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center);
             SetRectStretch(titleText.rectTransform, 20, 0, 20, 0);
 
@@ -304,11 +317,11 @@ namespace VRLicensing
             var keyContRt = keyContainer.GetComponent<RectTransform>();
             keyContRt.anchorMin = new Vector2(0.5f, 0.5f);
             keyContRt.anchorMax = new Vector2(0.5f, 0.5f);
-            keyContRt.sizeDelta = new Vector2(560, 55);
+            keyContRt.sizeDelta = new Vector2(520, 55);
             keyContRt.anchoredPosition = new Vector2(0, 20);
 
             var hlg = keyContainer.AddComponent<HorizontalLayoutGroup>();
-            hlg.spacing = 8;
+            hlg.spacing = 6;
             hlg.childAlignment = TextAnchor.MiddleCenter;
             hlg.childForceExpandWidth = false;
             hlg.childForceExpandHeight = true;
@@ -320,14 +333,14 @@ namespace VRLicensing
 
             for (int i = 0; i < 4; i++)
             {
-                keyFields[i] = CreateKeyInputField($"KeyField_{i}", keyContainer.GetComponent<RectTransform>(), 120);
+                keyFields[i] = CreateKeyInputField($"KeyField_{i}", keyContainer.GetComponent<RectTransform>(), 95);
 
                 if (i < 3)
                 {
                     keySeparators[i] = CreateTMPText($"Sep_{i}", keyContainer.GetComponent<RectTransform>(),
                         "—", 20, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center);
                     var sepLe = keySeparators[i].gameObject.AddComponent<LayoutElement>();
-                    sepLe.preferredWidth = 20;
+                    sepLe.preferredWidth = 14;
                 }
             }
 
@@ -388,7 +401,7 @@ namespace VRLicensing
             headerRt.anchoredPosition = Vector2.zero;
 
             expiredTitleText = CreateTMPText("ExpiredTitle", headerRt,
-                "⏱ Demo Expirado",
+                "Demo Expirado",
                 24, FontStyles.Bold, COLOR_ERROR, TextAlignmentOptions.Center);
             SetRectStretch(expiredTitleText.rectTransform, 20, 0, 20, 0);
 
@@ -408,30 +421,30 @@ namespace VRLicensing
             var keyContRt = keyContainer.GetComponent<RectTransform>();
             keyContRt.anchorMin = new Vector2(0.5f, 0.5f);
             keyContRt.anchorMax = new Vector2(0.5f, 0.5f);
-            keyContRt.sizeDelta = new Vector2(560, 55);
+            keyContRt.sizeDelta = new Vector2(520, 55);
             keyContRt.anchoredPosition = new Vector2(0, 5);
 
-            var hlg = keyContainer.AddComponent<HorizontalLayoutGroup>();
-            hlg.spacing = 8;
-            hlg.childAlignment = TextAnchor.MiddleCenter;
-            hlg.childForceExpandWidth = false;
-            hlg.childForceExpandHeight = true;
-            hlg.childControlWidth = false;
-            hlg.childControlHeight = true;
+            var hlg2 = keyContainer.AddComponent<HorizontalLayoutGroup>();
+            hlg2.spacing = 6;
+            hlg2.childAlignment = TextAnchor.MiddleCenter;
+            hlg2.childForceExpandWidth = false;
+            hlg2.childForceExpandHeight = true;
+            hlg2.childControlWidth = false;
+            hlg2.childControlHeight = true;
 
             expiredKeyFields = new TMP_InputField[4];
 
             for (int i = 0; i < 4; i++)
             {
                 expiredKeyFields[i] = CreateKeyInputField($"ExpKeyField_{i}",
-                    keyContainer.GetComponent<RectTransform>(), 120);
+                    keyContainer.GetComponent<RectTransform>(), 95);
 
                 if (i < 3)
                 {
                     var sep = CreateTMPText($"ExpSep_{i}", keyContainer.GetComponent<RectTransform>(),
                         "—", 20, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center);
                     var sepLe = sep.gameObject.AddComponent<LayoutElement>();
-                    sepLe.preferredWidth = 20;
+                    sepLe.preferredWidth = 14;
                 }
             }
 
@@ -473,7 +486,7 @@ namespace VRLicensing
             panelRt.anchoredPosition = Vector2.zero;
 
             successText = CreateTMPText("SuccessText", panelRt,
-                "✓ Licencia Activada\n¡Disfruta el simulador!",
+                "Licencia Activada!\nDisfruta el simulador!",
                 26, FontStyles.Bold, COLOR_SUCCESS, TextAlignmentOptions.Center);
             SetRectStretch(successText.rectTransform, 30, 30, 30, 30);
 
