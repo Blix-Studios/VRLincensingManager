@@ -125,5 +125,104 @@ namespace VRLicensing
                 callback?.Invoke(isConnected);
             }
         }
+
+        /// <summary>
+        /// Fetches branding data for a license from the license_branding table.
+        /// Returns null if no branding is configured by the client.
+        /// </summary>
+        /// <param name="licenseId">The license UUID to fetch branding for.</param>
+        /// <param name="onSuccess">Called with BrandingData if found (null if not configured).</param>
+        /// <param name="onError">Called with error message on failure.</param>
+        public IEnumerator FetchBranding(string licenseId,
+            Action<BrandingData> onSuccess, Action<string> onError)
+        {
+            string endpoint = $"{supabaseUrl}/rest/v1/license_branding";
+            string query = $"?license_id=eq.{Uri.EscapeDataString(licenseId)}" +
+                           $"&select=id,license_id,brand_name,logo_url";
+
+            string url = endpoint + query;
+
+            using (var request = UnityWebRequest.Get(url))
+            {
+                request.SetRequestHeader("apikey", anonKey);
+                request.SetRequestHeader("Authorization", $"Bearer {anonKey}");
+                request.SetRequestHeader("Accept", "application/json");
+                request.timeout = 10;
+
+                Debug.Log($"[VR Licensing] Fetching branding for license {licenseId}...");
+
+                yield return request.SendWebRequest();
+
+                if (request.result != UnityWebRequest.Result.Success)
+                {
+                    string errorMsg = $"Error fetching branding: {request.error}";
+                    Debug.LogWarning($"[VR Licensing] {errorMsg}");
+                    onError?.Invoke(errorMsg);
+                    yield break;
+                }
+
+                string responseBody = request.downloadHandler.text;
+
+                try
+                {
+                    var brandingArray = BrandingDataArray.FromJson(responseBody);
+
+                    if (brandingArray.items == null || brandingArray.items.Length == 0)
+                    {
+                        Debug.Log("[VR Licensing] No branding configured for this license.");
+                        onSuccess?.Invoke(null);
+                        yield break;
+                    }
+
+                    BrandingData branding = brandingArray.items[0];
+                    Debug.Log($"[VR Licensing] Branding loaded: \"{branding.brand_name}\" " +
+                        $"(logo: {(string.IsNullOrEmpty(branding.logo_url) ? "none" : "yes")})");
+
+                    onSuccess?.Invoke(branding);
+                }
+                catch (Exception e)
+                {
+                    string errorMsg = $"Error parsing branding response: {e.Message}";
+                    Debug.LogError($"[VR Licensing] {errorMsg}");
+                    onError?.Invoke(errorMsg);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Sends device telemetry data to the device_telemetry table.
+        /// Fire-and-forget: errors are logged but do not affect licensing flow.
+        /// </summary>
+        /// <param name="payload">The telemetry data collected by TelemetryCollector.</param>
+        public IEnumerator SendTelemetry(TelemetryPayload payload)
+        {
+            string url = $"{supabaseUrl}/rest/v1/device_telemetry";
+            string jsonBody = payload.ToJson();
+
+            using (var request = new UnityWebRequest(url, "POST"))
+            {
+                byte[] bodyRaw = Encoding.UTF8.GetBytes(jsonBody);
+                request.uploadHandler = new UploadHandlerRaw(bodyRaw);
+                request.downloadHandler = new DownloadHandlerBuffer();
+                request.SetRequestHeader("apikey", anonKey);
+                request.SetRequestHeader("Authorization", $"Bearer {anonKey}");
+                request.SetRequestHeader("Content-Type", "application/json");
+                request.SetRequestHeader("Prefer", "return=minimal");
+                request.timeout = 10;
+
+                Debug.Log("[VR Licensing] Sending device telemetry...");
+
+                yield return request.SendWebRequest();
+
+                if (request.result != UnityWebRequest.Result.Success)
+                {
+                    Debug.LogWarning($"[VR Licensing] Telemetry send failed (non-critical): {request.error}");
+                }
+                else
+                {
+                    Debug.Log("[VR Licensing] Telemetry sent successfully.");
+                }
+            }
+        }
     }
 }

@@ -36,7 +36,13 @@ namespace VRLicensing
 
         private LicenseConfig config;
         private LicenseData cachedLicense;
+        private BrandingData cachedBranding;
         private LicenseUIBuilder uiBuilder;
+        private int sessionCount;
+        private float fpsAccumulator;
+        private int fpsFrameCount;
+
+        private const string SESSION_COUNT_KEY = "vrl_session_count";
 
         /// <summary>
         /// Current state of the licensing system.
@@ -47,6 +53,12 @@ namespace VRLicensing
         /// The active license data (null if unlicensed/demo).
         /// </summary>
         public LicenseData ActiveLicense => cachedLicense;
+
+        /// <summary>
+        /// The active branding data configured by the client on the web portal.
+        /// Returns null if no branding has been configured.
+        /// </summary>
+        public BrandingData ActiveBranding => cachedBranding;
 
         /// <summary>
         /// The configuration used by this manager.
@@ -78,6 +90,12 @@ namespace VRLicensing
         /// <summary>Fired when an online validation error occurs.</summary>
         public event Action<string> OnValidationError;
 
+        /// <summary>
+        /// Fired when branding data is loaded from the server.
+        /// Parameter is null if no branding is configured by the client.
+        /// </summary>
+        public event Action<BrandingData> OnBrandingLoaded;
+
         #endregion
 
         /// <summary>
@@ -96,6 +114,12 @@ namespace VRLicensing
 
             // Subscribe to demo expiration
             demoManager.OnDemoExpired += HandleDemoExpired;
+
+            // Load session count
+            sessionCount = PlayerPrefs.GetInt(SESSION_COUNT_KEY, 0);
+            sessionCount++;
+            PlayerPrefs.SetInt(SESSION_COUNT_KEY, sessionCount);
+            PlayerPrefs.Save();
 
             // Start the licensing flow
             StartCoroutine(StartLicensingFlow());
@@ -246,6 +270,62 @@ namespace VRLicensing
 
             Debug.Log($"[VR Licensing] License ACTIVATED — Type: {license.license_type}, " +
                 $"Expires: {license.expires_at}, Remaining: {license.TimeRemaining}");
+
+            // Fetch branding data from the web portal (non-blocking)
+            StartCoroutine(FetchAndCacheBranding(license.id));
+
+            // Send device telemetry (fire-and-forget, non-blocking)
+            StartCoroutine(SendSessionTelemetry(license.id));
+        }
+
+        /// <summary>
+        /// Fetches branding set by the client on the web portal and caches it.
+        /// Other scripts can read LicenseManager.ActiveBranding at any time.
+        /// </summary>
+        private IEnumerator FetchAndCacheBranding(string licenseId)
+        {
+            yield return supabaseClient.FetchBranding(
+                licenseId,
+                (branding) =>
+                {
+                    cachedBranding = branding;
+                    OnBrandingLoaded?.Invoke(branding);
+
+                    if (branding != null && branding.HasBranding)
+                    {
+                        Debug.Log($"[VR Licensing] Client branding: \"{branding.brand_name}\"");
+                    }
+                    else
+                    {
+                        Debug.Log("[VR Licensing] No client branding configured — using defaults.");
+                    }
+                },
+                (error) =>
+                {
+                    Debug.LogWarning($"[VR Licensing] Could not fetch branding: {error}");
+                    cachedBranding = null;
+                    OnBrandingLoaded?.Invoke(null);
+                }
+            );
+        }
+
+        /// <summary>
+        /// Collects device data and sends it to the telemetry table.
+        /// </summary>
+        private IEnumerator SendSessionTelemetry(string licenseId)
+        {
+            float demoUsed = SecureLicenseStorage.GetDemoUsedSeconds();
+            float avgFps = fpsFrameCount > 0 ? fpsAccumulator / fpsFrameCount : 0f;
+
+            var payload = TelemetryCollector.Collect(
+                licenseId: licenseId,
+                sessionDuration: sessionTracker != null ? SecureLicenseStorage.GetSessionUsedSeconds() : 0f,
+                demoUsed: demoUsed,
+                sessionCount: sessionCount,
+                avgFps: avgFps
+            );
+
+            yield return supabaseClient.SendTelemetry(payload);
         }
 
         /// <summary>
@@ -254,6 +334,10 @@ namespace VRLicensing
         /// </summary>
         private void Update()
         {
+            // Track FPS for telemetry
+            fpsAccumulator += 1f / Time.unscaledDeltaTime;
+            fpsFrameCount++;
+
             if (CurrentState == LicenseState.Licensed && cachedLicense != null)
             {
                 // Check if license has expired since last frame
