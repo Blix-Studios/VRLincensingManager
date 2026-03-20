@@ -138,18 +138,15 @@ namespace VRLicensing
                 SetState(LicenseState.ClockTampered);
                 OnClockTamperDetected?.Invoke();
 
-                // Try to verify online
                 bool isOnline = false;
                 yield return supabaseClient.CheckConnectivity(connected => isOnline = connected);
 
                 if (!isOnline)
                 {
-                    // Can't verify — stay locked
                     Debug.LogError("[VR Licensing] Cannot verify license: clock tampered and no internet.");
                     yield break;
                 }
 
-                // Reset clock guard if we can verify online
                 clockGuard.UpdateHighestKnownTime();
             }
 
@@ -170,32 +167,25 @@ namespace VRLicensing
                 cachedLicense = null;
             }
 
-            // Step 3: No valid license — enter demo or unlicensed state
+            // Step 3: Check demo status
             float demoUsed = SecureLicenseStorage.GetDemoUsedSeconds();
-            if (demoUsed < config.demoDurationSeconds)
+            if (demoUsed >= config.demoDurationSeconds)
             {
-                Debug.Log($"[VR Licensing] Entering demo mode. Used: {demoUsed:F0}s / {config.demoDurationSeconds:F0}s");
-                SetState(LicenseState.Demo);
-                demoManager.StartDemo(config.demoDurationSeconds);
-                sessionTracker.StartTracking();
-            }
-            else
-            {
+                // Demo fully expired — must enter license key
                 Debug.Log("[VR Licensing] Demo expired. Awaiting license key.");
                 SetState(LicenseState.Expired);
                 OnDemoExpired?.Invoke();
             }
+            else
+            {
+                // Show welcome panel — user chooses to start demo or enter key
+                Debug.Log("[VR Licensing] Showing welcome panel.");
+                SetState(LicenseState.Unlicensed);
+            }
         }
 
-        /// <summary>
-        /// Call this when the user enters a license key in the UI.
-        /// Validates the key online against Supabase.
-        /// </summary>
-        /// <param name="licenseKey">The key entered by the user.</param>
-        /// <param name="onResult">Callback with (success, errorMessage).</param>
         public void SubmitLicenseKey(string licenseKey, Action<bool, string> onResult = null)
         {
-            // Normalize: uppercase and trim
             licenseKey = licenseKey.Trim().ToUpperInvariant();
 
             if (string.IsNullOrEmpty(licenseKey))
@@ -280,16 +270,36 @@ namespace VRLicensing
                 clockGuard.UpdateHighestKnownTime();
             }
 
-            // Update demo timer on the UI
-            if (CurrentState == LicenseState.Demo && uiBuilder != null && config != null)
+            // Update demo timer in real-time using DemoModeManager
+            if (CurrentState == LicenseState.Demo && demoManager != null)
             {
-                float demoUsed = SecureLicenseStorage.GetDemoUsedSeconds();
-                float remaining = config.demoDurationSeconds - demoUsed;
-                if (remaining > 0)
+                if (demoManager.IsDemoExpired)
                 {
-                    uiBuilder.UpdateDemoTimer(remaining);
+                    // DemoModeManager will fire OnDemoExpired, handled by HandleDemoExpired
+                    return;
                 }
             }
+        }
+
+        /// <summary>
+        /// Called by UI when user clicks "Iniciar Demo Gratuita".
+        /// Starts the demo timer and hides the UI.
+        /// </summary>
+        public void StartDemoMode()
+        {
+            float demoUsed = SecureLicenseStorage.GetDemoUsedSeconds();
+            if (demoUsed >= config.demoDurationSeconds)
+            {
+                Debug.Log("[VR Licensing] Cannot start demo — already expired.");
+                SetState(LicenseState.Expired);
+                OnDemoExpired?.Invoke();
+                return;
+            }
+
+            Debug.Log($"[VR Licensing] Starting demo mode. Used: {demoUsed:F0}s / {config.demoDurationSeconds:F0}s");
+            SetState(LicenseState.Demo);
+            demoManager.StartDemo(config.demoDurationSeconds);
+            sessionTracker.StartTracking();
         }
 
         /// <summary>
@@ -347,12 +357,10 @@ namespace VRLicensing
             switch (state)
             {
                 case LicenseState.Unlicensed:
-                    uiBuilder.ShowLicenseGate();
+                    uiBuilder.ShowWelcome();
                     break;
                 case LicenseState.Demo:
-                    float demoUsed = SecureLicenseStorage.GetDemoUsedSeconds();
-                    float remaining = config.demoDurationSeconds - demoUsed;
-                    uiBuilder.ShowDemoMode(remaining);
+                    uiBuilder.HideAll(); // UI hidden, user is in the simulator
                     break;
                 case LicenseState.Licensed:
                     uiBuilder.ShowLicensed();
@@ -362,7 +370,7 @@ namespace VRLicensing
                     break;
                 case LicenseState.ClockTampered:
                     uiBuilder.ShowError("Reloj del sistema alterado. Conecta a internet para verificar.");
-                    uiBuilder.ShowLicenseGate();
+                    uiBuilder.ShowWelcome();
                     break;
             }
         }
