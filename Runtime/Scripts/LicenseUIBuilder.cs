@@ -566,27 +566,61 @@ namespace VRLicensing
             {
                 lazyFollowInstance = target.AddComponent(lazyFollowType);
 
-                var posModeProp = lazyFollowType.GetProperty("positionFollowMode");
-                if (posModeProp != null)
-                    posModeProp.SetValue(lazyFollowInstance, Enum.ToObject(posModeProp.PropertyType, 1));
+                // Use serialized field names (m_ prefix) since public properties
+                // might be read-only or have different internal names in XRI 3.x
+                var flags = System.Reflection.BindingFlags.Instance |
+                            System.Reflection.BindingFlags.NonPublic |
+                            System.Reflection.BindingFlags.Public;
 
-                var rotModeProp = lazyFollowType.GetProperty("rotationFollowMode");
-                if (rotModeProp != null)
-                    rotModeProp.SetValue(lazyFollowInstance, Enum.ToObject(rotModeProp.PropertyType, 2));
+                // Position Follow Mode = Follow (1)
+                SetFieldOrProperty(lazyFollowType, lazyFollowInstance, "m_PositionFollowMode", "positionFollowMode", 1, flags);
 
-                var speedProp = lazyFollowType.GetProperty("speed");
-                if (speedProp != null)
-                    speedProp.SetValue(lazyFollowInstance, 5f);
+                // Rotation Follow Mode = LookAtWithWorldUp (2)
+                SetFieldOrProperty(lazyFollowType, lazyFollowInstance, "m_RotationFollowMode", "rotationFollowMode", 2, flags);
 
-                var offsetProp = lazyFollowType.GetProperty("targetOffset");
-                if (offsetProp != null)
-                    offsetProp.SetValue(lazyFollowInstance, new Vector3(0f, -0.1f, CANVAS_DISTANCE));
+                // Movement Speed
+                SetFieldOrProperty(lazyFollowType, lazyFollowInstance, "m_MovementSpeed", "speed", 5f, flags);
 
-                Debug.Log("[VR Licensing] LazyFollow agregado.");
+                // Target Offset — Z = distance in front of camera
+                SetFieldOrProperty(lazyFollowType, lazyFollowInstance, "m_TargetOffset", "targetOffset",
+                    new Vector3(0f, -0.1f, CANVAS_DISTANCE), flags);
+
+                // Snap On Enable
+                SetFieldOrProperty(lazyFollowType, lazyFollowInstance, "m_SnapOnEnable", "snapOnEnable", true, flags);
+
+                Debug.Log($"[VR Licensing] LazyFollow agregado (targetOffset.z = {CANVAS_DISTANCE}).");
             }
             else
             {
                 Debug.Log("[VR Licensing] LazyFollow no disponible, posicionamiento manual.");
+            }
+        }
+
+        /// <summary>
+        /// Tries serialized field first (m_ prefix), then public property.
+        /// Handles enum conversion for mode fields.
+        /// </summary>
+        private void SetFieldOrProperty(Type type, object instance, string fieldName, string propName, object value, System.Reflection.BindingFlags flags)
+        {
+            // Try field first
+            var field = type.GetField(fieldName, flags);
+            if (field != null)
+            {
+                if (field.FieldType.IsEnum)
+                    field.SetValue(instance, Enum.ToObject(field.FieldType, value));
+                else
+                    field.SetValue(instance, value);
+                return;
+            }
+
+            // Fallback to property
+            var prop = type.GetProperty(propName, flags);
+            if (prop != null && prop.CanWrite)
+            {
+                if (prop.PropertyType.IsEnum)
+                    prop.SetValue(instance, Enum.ToObject(prop.PropertyType, value));
+                else
+                    prop.SetValue(instance, value);
             }
         }
 
@@ -595,7 +629,18 @@ namespace VRLicensing
         private void EnsurePositioned()
         {
             if (isPositioned) return;
-            StartCoroutine(PositionWhenCameraReady());
+
+            // Try synchronous positioning first
+            var cam = Camera.main;
+            if (cam != null)
+            {
+                SetupCameraTarget(cam);
+                isPositioned = true;
+            }
+            else
+            {
+                StartCoroutine(PositionWhenCameraReady());
+            }
         }
 
         private IEnumerator PositionWhenCameraReady()
@@ -603,22 +648,40 @@ namespace VRLicensing
             while (Camera.main == null)
                 yield return null;
 
-            var cam = Camera.main;
+            SetupCameraTarget(Camera.main);
+            isPositioned = true;
+        }
 
+        private void SetupCameraTarget(Camera cam)
+        {
             if (lazyFollowInstance != null)
             {
-                var targetProp = lazyFollowInstance.GetType().GetProperty("target");
-                if (targetProp != null)
-                    targetProp.SetValue(lazyFollowInstance, cam.transform);
+                // Set LazyFollow target to camera
+                var flags = System.Reflection.BindingFlags.Instance |
+                            System.Reflection.BindingFlags.NonPublic |
+                            System.Reflection.BindingFlags.Public;
+                var targetField = lazyFollowInstance.GetType().GetField("m_Target", flags);
+                if (targetField != null)
+                    targetField.SetValue(lazyFollowInstance, cam.transform);
+                else
+                {
+                    var targetProp = lazyFollowInstance.GetType().GetProperty("target", flags);
+                    if (targetProp != null)
+                        targetProp.SetValue(lazyFollowInstance, cam.transform);
+                }
+
+                // Also position canvas initially so it doesn't start at origin
+                var ct = canvas.transform;
+                ct.position = cam.transform.position + cam.transform.forward * CANVAS_DISTANCE + cam.transform.up * -0.1f;
+                ct.rotation = Quaternion.LookRotation(ct.position - cam.transform.position, Vector3.up);
             }
             else
             {
+                // Manual positioning fallback
                 var ct = canvas.transform;
                 ct.position = cam.transform.position + cam.transform.forward * CANVAS_DISTANCE;
                 ct.rotation = Quaternion.LookRotation(ct.position - cam.transform.position, Vector3.up);
             }
-
-            isPositioned = true;
         }
 
         // ─────────────────── Key Field Builders ───────────────────
