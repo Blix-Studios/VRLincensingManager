@@ -36,6 +36,7 @@ namespace VRLicensing
 
         private LicenseConfig config;
         private LicenseData cachedLicense;
+        private LicenseUIBuilder uiBuilder;
 
         /// <summary>
         /// Current state of the licensing system.
@@ -51,6 +52,11 @@ namespace VRLicensing
         /// The configuration used by this manager.
         /// </summary>
         public LicenseConfig Config => config;
+
+        /// <summary>
+        /// Sets the code-generated UI builder. Called by LicenseBootstrapper.
+        /// </summary>
+        public void SetUIBuilder(LicenseUIBuilder builder) => uiBuilder = builder;
 
         #region Events
 
@@ -273,6 +279,17 @@ namespace VRLicensing
                 // Update clock guard periodically (every frame is fine, it's cheap)
                 clockGuard.UpdateHighestKnownTime();
             }
+
+            // Update demo timer on the UI
+            if (CurrentState == LicenseState.Demo && uiBuilder != null && config != null)
+            {
+                float demoUsed = SecureLicenseStorage.GetDemoUsedSeconds();
+                float remaining = config.demoDurationSeconds - demoUsed;
+                if (remaining > 0)
+                {
+                    uiBuilder.UpdateDemoTimer(remaining);
+                }
+            }
         }
 
         /// <summary>
@@ -315,6 +332,39 @@ namespace VRLicensing
             CurrentState = newState;
             Debug.Log($"[VR Licensing] State: {previousState} → {newState}");
             OnStateChanged?.Invoke(newState);
+
+            // Drive the UI builder if available
+            UpdateUI(newState);
+        }
+
+        /// <summary>
+        /// Updates the UI builder panels based on the current state.
+        /// </summary>
+        private void UpdateUI(LicenseState state)
+        {
+            if (uiBuilder == null) return;
+
+            switch (state)
+            {
+                case LicenseState.Unlicensed:
+                    uiBuilder.ShowLicenseGate();
+                    break;
+                case LicenseState.Demo:
+                    float demoUsed = SecureLicenseStorage.GetDemoUsedSeconds();
+                    float remaining = config.demoDurationSeconds - demoUsed;
+                    uiBuilder.ShowDemoMode(remaining);
+                    break;
+                case LicenseState.Licensed:
+                    uiBuilder.ShowLicensed();
+                    break;
+                case LicenseState.Expired:
+                    uiBuilder.ShowDemoExpired();
+                    break;
+                case LicenseState.ClockTampered:
+                    uiBuilder.ShowError("Reloj del sistema alterado. Conecta a internet para verificar.");
+                    uiBuilder.ShowLicenseGate();
+                    break;
+            }
         }
 
         private void HandleDemoExpired()

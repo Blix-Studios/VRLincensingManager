@@ -16,7 +16,12 @@
             "name": "com.meta.xr.sdk.core",
             "expression": "",
             "define": "USE_OCULUS_SDK"
+        },
+        {
+            "name": "com.unity.xr.interaction.toolkit",
+            "expression": "3.0.0",
+            "define": "HAS_XR_INTERACTION_TOOLKIT"
         }
     ],
     "noEngineReferences": false
-}
+}

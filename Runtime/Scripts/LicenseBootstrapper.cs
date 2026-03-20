@@ -29,11 +29,11 @@ namespace VRLicensing
             var prefab = Resources.Load<GameObject>("LicenseGateUI");
             if (prefab != null)
             {
+                // Opción A: El proyecto provee un prefab custom de UI
                 var gate = Object.Instantiate(prefab);
                 gate.name = "[VR Licensing System]";
                 Object.DontDestroyOnLoad(gate);
 
-                // Inicializar el manager
                 var manager = gate.GetComponent<LicenseManager>();
                 if (manager == null)
                 {
@@ -41,19 +41,25 @@ namespace VRLicensing
                 }
                 manager.Initialize(config);
 
-                Debug.Log($"[VR Licensing] Sistema inicializado para: {config.appDisplayName}");
+                Debug.Log($"[VR Licensing] Sistema inicializado con prefab custom para: {config.appDisplayName}");
             }
             else
             {
-                // Fallback: crear un GameObject vacío con solo la lógica (sin UI prefab)
-                Debug.LogWarning("[VR Licensing] No se encontró el prefab 'LicenseGateUI' en Resources. " +
-                    "Creando sistema sin UI. Puedes agregar el prefab después.");
+                // Opción B: Generar toda la UI por código (sin prefabs ni assets externos)
+                Debug.Log("[VR Licensing] Generando UI por código (no se encontró prefab 'LicenseGateUI').");
 
                 var systemObj = new GameObject("[VR Licensing System]");
                 Object.DontDestroyOnLoad(systemObj);
 
                 var manager = systemObj.AddComponent<LicenseManager>();
+
+                // Crear el UI builder — genera Canvas World-Space con toda la interfaz
+                var uiBuilder = LicenseUIBuilder.Create(config, manager);
+                manager.SetUIBuilder(uiBuilder);
+
                 manager.Initialize(config);
+
+                Debug.Log($"[VR Licensing] Sistema inicializado con UI generada para: {config.appDisplayName}");
             }
         }
     }
