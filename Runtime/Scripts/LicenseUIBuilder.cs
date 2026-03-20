@@ -264,6 +264,9 @@ namespace VRLicensing
             var rt = canvasGo.GetComponent<RectTransform>();
             rt.sizeDelta = new Vector2(CANVAS_PX_WIDTH, CANVAS_PX_HEIGHT);
             canvasGo.transform.localScale = Vector3.one * CANVAS_SCALE;
+
+            // Add LazyFollow for smooth VR head tracking
+            AddLazyFollow(canvasGo);
         }
 
         private void BuildOverlay()
@@ -545,6 +548,58 @@ namespace VRLicensing
             return result;
         }
 
+        // ─────────────────── LazyFollow Setup ───────────────────
+
+        private Component lazyFollowInstance;
+
+        /// <summary>
+        /// Adds the LazyFollow component from XR Interaction Toolkit via reflection.
+        /// Falls back to manual positioning if XRI is not available.
+        /// </summary>
+        private void AddLazyFollow(GameObject target)
+        {
+            var lazyFollowType = Type.GetType(
+                "UnityEngine.XR.Interaction.Toolkit.UI.BodyUI.LazyFollow, Unity.XR.Interaction.Toolkit");
+
+            if (lazyFollowType != null)
+            {
+                lazyFollowInstance = target.AddComponent(lazyFollowType);
+
+                // Configure LazyFollow via reflection
+                // positionFollowMode = Follow (enum value 1)
+                var posModeProp = lazyFollowType.GetProperty("positionFollowMode");
+                if (posModeProp != null)
+                {
+                    var posEnum = posModeProp.PropertyType;
+                    posModeProp.SetValue(lazyFollowInstance, Enum.ToObject(posEnum, 1)); // Follow = 1
+                }
+
+                // rotationFollowMode = LookAtWithWorldUp (enum value 2)
+                var rotModeProp = lazyFollowType.GetProperty("rotationFollowMode");
+                if (rotModeProp != null)
+                {
+                    var rotEnum = rotModeProp.PropertyType;
+                    rotModeProp.SetValue(lazyFollowInstance, Enum.ToObject(rotEnum, 2)); // LookAtWithWorldUp = 2
+                }
+
+                // speed — how fast it follows
+                var speedProp = lazyFollowType.GetProperty("speed");
+                if (speedProp != null)
+                    speedProp.SetValue(lazyFollowInstance, 5f);
+
+                // targetOffset — place it in front and slightly below eye level
+                var offsetProp = lazyFollowType.GetProperty("targetOffset");
+                if (offsetProp != null)
+                    offsetProp.SetValue(lazyFollowInstance, new Vector3(0f, -0.1f, CANVAS_DISTANCE));
+
+                Debug.Log("[VR Licensing] LazyFollow agregado para seguimiento suave de cabeza.");
+            }
+            else
+            {
+                Debug.Log("[VR Licensing] LazyFollow no disponible, usando posicionamiento manual.");
+            }
+        }
+
         // ─────────────────── Positioning ───────────────────
 
         private void EnsurePositioned()
@@ -561,26 +616,37 @@ namespace VRLicensing
                 yield return null;
             }
 
-            PositionInFrontOfCamera();
+            var cam = Camera.main;
+
+            // If we have LazyFollow, set its target to the camera
+            if (lazyFollowInstance != null)
+            {
+                var lazyFollowType = lazyFollowInstance.GetType();
+                var targetProp = lazyFollowType.GetProperty("target");
+                if (targetProp != null)
+                    targetProp.SetValue(lazyFollowInstance, cam.transform);
+            }
+            else
+            {
+                // Fallback: manual static positioning
+                PositionInFrontOfCamera(cam);
+            }
+
             isPositioned = true;
         }
 
         /// <summary>
-        /// Positions the canvas in front of the main camera.
+        /// Manual fallback positioning when LazyFollow is not available.
         /// </summary>
-        public void PositionInFrontOfCamera()
+        private void PositionInFrontOfCamera(Camera cam)
         {
-            var cam = Camera.main;
             if (cam == null) return;
 
             var canvasTransform = canvas.transform;
             Vector3 camPos = cam.transform.position;
             Vector3 camForward = cam.transform.forward;
 
-            // Position the canvas in front of the camera
             canvasTransform.position = camPos + camForward * CANVAS_DISTANCE;
-
-            // Make canvas face the camera
             canvasTransform.rotation = Quaternion.LookRotation(
                 canvasTransform.position - camPos, Vector3.up);
         }
