@@ -135,7 +135,7 @@ namespace VRLicensing
             if (clockGuard.IsClockTampered())
             {
                 Debug.LogWarning("[VR Licensing] Clock tampering detected!");
-                SetState(LicenseState.ClockTampered);
+                SetState(LicenseState.ClockTampered, forceUpdate: true);
                 OnClockTamperDetected?.Invoke();
 
                 bool isOnline = false;
@@ -173,14 +173,14 @@ namespace VRLicensing
             {
                 // Demo fully expired — must enter license key
                 Debug.Log("[VR Licensing] Demo expired. Awaiting license key.");
-                SetState(LicenseState.Expired);
+                SetState(LicenseState.Expired, forceUpdate: true);
                 OnDemoExpired?.Invoke();
             }
             else
             {
                 // Show welcome panel — user chooses to start demo or enter key
                 Debug.Log("[VR Licensing] Showing welcome panel.");
-                SetState(LicenseState.Unlicensed);
+                SetState(LicenseState.Unlicensed, forceUpdate: true);
             }
         }
 
@@ -334,9 +334,9 @@ namespace VRLicensing
             Debug.Log("[VR Licensing] License reset.");
         }
 
-        private void SetState(LicenseState newState)
+        private void SetState(LicenseState newState, bool forceUpdate = false)
         {
-            if (CurrentState == newState) return;
+            if (CurrentState == newState && !forceUpdate) return;
 
             var previousState = CurrentState;
             CurrentState = newState;

@@ -295,7 +295,7 @@ namespace VRLicensing
             vlg.childForceExpandWidth = true;
             vlg.childForceExpandHeight = false;
             vlg.childControlWidth = true;
-            vlg.childControlHeight = false;
+            vlg.childControlHeight = true;
 
             // Button 1: Start Demo (green)
             CreateLayoutButton("StartDemoBtn", btnContRt,
@@ -566,27 +566,25 @@ namespace VRLicensing
             {
                 lazyFollowInstance = target.AddComponent(lazyFollowType);
 
-                // Use serialized field names (m_ prefix) since public properties
-                // might be read-only or have different internal names in XRI 3.x
                 var flags = System.Reflection.BindingFlags.Instance |
                             System.Reflection.BindingFlags.NonPublic |
                             System.Reflection.BindingFlags.Public;
 
                 // Position Follow Mode = Follow (1)
-                SetFieldOrProperty(lazyFollowType, lazyFollowInstance, "m_PositionFollowMode", "positionFollowMode", 1, flags);
+                SetNestedXRI3Field(lazyFollowType, lazyFollowInstance, "m_PositionFollowParams", "m_PositionFollowMode", "positionFollowMode", 1, flags);
 
-                // Rotation Follow Mode = LookAtWithWorldUp (2)
-                SetFieldOrProperty(lazyFollowType, lazyFollowInstance, "m_RotationFollowMode", "rotationFollowMode", 2, flags);
+                // Rotation Follow Mode = LookAtWithWorldUp / LookAt (2)
+                SetNestedXRI3Field(lazyFollowType, lazyFollowInstance, "m_RotationFollowParams", "m_RotationFollowMode", "rotationFollowMode", 2, flags);
 
                 // Movement Speed
-                SetFieldOrProperty(lazyFollowType, lazyFollowInstance, "m_MovementSpeed", "speed", 5f, flags);
+                SetNestedXRI3Field(lazyFollowType, lazyFollowInstance, "m_GeneralFollowParams", "m_MovementSpeed", "speed", 5f, flags);
 
                 // Target Offset — Z = distance in front of camera
-                SetFieldOrProperty(lazyFollowType, lazyFollowInstance, "m_TargetOffset", "targetOffset",
+                SetNestedXRI3Field(lazyFollowType, lazyFollowInstance, "m_TargetConfig", "m_TargetOffset", "targetOffset",
                     new Vector3(0f, -0.1f, CANVAS_DISTANCE), flags);
 
                 // Snap On Enable
-                SetFieldOrProperty(lazyFollowType, lazyFollowInstance, "m_SnapOnEnable", "snapOnEnable", true, flags);
+                SetNestedXRI3Field(lazyFollowType, lazyFollowInstance, "m_GeneralFollowParams", "m_SnapOnEnable", "snapOnEnable", true, flags);
 
                 Debug.Log($"[VR Licensing] LazyFollow agregado (targetOffset.z = {CANVAS_DISTANCE}).");
             }
@@ -594,6 +592,29 @@ namespace VRLicensing
             {
                 Debug.Log("[VR Licensing] LazyFollow no disponible, posicionamiento manual.");
             }
+        }
+
+        private void SetNestedXRI3Field(Type type, object instance, string groupField, string fieldName, string propName, object value, System.Reflection.BindingFlags flags)
+        {
+            // First, try to see if it's hidden inside an XRI 3.x params struct
+            var group = type.GetField(groupField, flags);
+            if (group != null)
+            {
+                var groupVal = group.GetValue(instance);
+                if (groupVal != null)
+                {
+                    SetFieldOrProperty(groupVal.GetType(), groupVal, fieldName, propName, value, flags);
+                    // Since it's a struct, we must set it back onto the component
+                    if (group.FieldType.IsValueType)
+                    {
+                        group.SetValue(instance, groupVal);
+                    }
+                    return;
+                }
+            }
+
+            // Fallback: XRI 2.x standard fields/properties
+            SetFieldOrProperty(type, instance, fieldName, propName, value, flags);
         }
 
         /// <summary>
@@ -656,21 +677,46 @@ namespace VRLicensing
         {
             if (lazyFollowInstance != null)
             {
-                // Set LazyFollow target to camera
                 var flags = System.Reflection.BindingFlags.Instance |
                             System.Reflection.BindingFlags.NonPublic |
                             System.Reflection.BindingFlags.Public;
-                var targetField = lazyFollowInstance.GetType().GetField("m_Target", flags);
-                if (targetField != null)
-                    targetField.SetValue(lazyFollowInstance, cam.transform);
-                else
+
+                // In XRI 3.x, target is often in m_TargetConfig struct
+                var lazyFollowType = lazyFollowInstance.GetType();
+                var groupField = lazyFollowType.GetField("m_TargetConfig", flags);
+                
+                bool targetSet = false;
+                if (groupField != null)
                 {
-                    var targetProp = lazyFollowInstance.GetType().GetProperty("target", flags);
-                    if (targetProp != null)
-                        targetProp.SetValue(lazyFollowInstance, cam.transform);
+                    var groupVal = groupField.GetValue(lazyFollowInstance);
+                    if (groupVal != null)
+                    {
+                        var targetField = groupVal.GetType().GetField("m_Target", flags) ?? groupVal.GetType().GetField("target", flags);
+                        if (targetField != null)
+                        {
+                            targetField.SetValue(groupVal, cam.transform);
+                            if (groupField.FieldType.IsValueType)
+                                groupField.SetValue(lazyFollowInstance, groupVal); // set struct back
+                            targetSet = true;
+                        }
+                    }
+                }
+                
+                if (!targetSet)
+                {
+                    // Fallback to top-level XRI 2.x
+                    var targetField = lazyFollowType.GetField("m_Target", flags);
+                    if (targetField != null)
+                        targetField.SetValue(lazyFollowInstance, cam.transform);
+                    else
+                    {
+                        var targetProp = lazyFollowType.GetProperty("target", flags);
+                        if (targetProp != null)
+                            targetProp.SetValue(lazyFollowInstance, cam.transform);
+                    }
                 }
 
-                // Also position canvas initially so it doesn't start at origin
+                // Initial position
                 var ct = canvas.transform;
                 ct.position = cam.transform.position + cam.transform.forward * CANVAS_DISTANCE + cam.transform.up * -0.1f;
                 ct.rotation = Quaternion.LookRotation(ct.position - cam.transform.position, Vector3.up);
