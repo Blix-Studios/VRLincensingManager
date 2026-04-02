@@ -7,29 +7,29 @@ namespace VRLicensing
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         private static void Initialize()
         {
-            // 1. Buscar la configuración específica de este simulador
+            // 1. Search for the specific configuration for this simulator
             var config = Resources.Load<LicenseConfig>("LicenseConfig");
 
             if (config == null)
             {
-                Debug.LogError("[VR Licensing] No se encontró 'LicenseConfig' en la carpeta Resources. " +
-                    "Crea uno con: Create > VR Licensing > Nueva Configuracion y colócalo en Assets/Resources/.");
+                Debug.LogError("[VR Licensing] 'LicenseConfig' not found in the Resources folder. " +
+                    "Create one with: Create > VR Licensing > New Configuration and place it in Assets/Resources/.");
                 return;
             }
 
-            // 2. Validar que la config tiene los campos mínimos
+            // 2. Validate that the config has the minimum fields
             if (string.IsNullOrEmpty(config.supabaseUrl) || string.IsNullOrEmpty(config.anonKey))
             {
-                Debug.LogError("[VR Licensing] LicenseConfig encontrado pero faltan supabaseUrl o anonKey. " +
-                    "Configúralos en el Inspector.");
+                Debug.LogError("[VR Licensing] LicenseConfig found but supabaseUrl or anonKey are missing. " +
+                    "Configure them in the Inspector.");
                 return;
             }
 
-            // 3. Instanciar el sistema de licencias
+            // 3. Instantiate the license system
             var prefab = Resources.Load<GameObject>("LicenseGateUI");
             if (prefab != null)
             {
-                // Opción A: El proyecto provee un prefab custom de UI
+                // Option A: The project provides a custom UI prefab
                 var gate = Object.Instantiate(prefab);
                 gate.name = "[VR Licensing System]";
                 Object.DontDestroyOnLoad(gate);
@@ -41,12 +41,12 @@ namespace VRLicensing
                 }
                 manager.Initialize(config);
 
-                Debug.Log($"[VR Licensing] Sistema inicializado con prefab custom para: {config.appDisplayName}");
+                Debug.Log($"[VR Licensing] System initialized with custom prefab for: {config.appDisplayName}");
             }
             else
             {
-                // Opción B: Generar toda la UI por código (sin prefabs ni assets externos)
-                Debug.Log("[VR Licensing] Generando UI por código (no se encontró prefab 'LicenseGateUI').");
+                // Option B: Generate all UI via code (no prefabs or external assets)
+                Debug.Log("[VR Licensing] Generating UI via code (no 'LicenseGateUI' prefab found).");
 
                 var systemObj = new GameObject("[VR Licensing System]");
                 Object.DontDestroyOnLoad(systemObj);
@@ -59,7 +59,7 @@ namespace VRLicensing
 
                 manager.Initialize(config);
 
-                Debug.Log($"[VR Licensing] Sistema inicializado con UI generada para: {config.appDisplayName}");
+                Debug.Log($"[VR Licensing] System initialized with generated UI for: {config.appDisplayName}");
             }
         }
     }

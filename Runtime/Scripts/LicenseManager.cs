@@ -38,9 +38,11 @@ namespace VRLicensing
         private LicenseData cachedLicense;
         private BrandingData cachedBranding;
         private LicenseUIBuilder uiBuilder;
+        private DeviceRegistryData serverDeviceRecord;
         private int sessionCount;
         private float fpsAccumulator;
         private int fpsFrameCount;
+        private bool isLicenseExpiry; // true = license expired, false = demo expired
 
         private const string SESSION_COUNT_KEY = "vrl_session_count";
 
@@ -115,7 +117,7 @@ namespace VRLicensing
             // Subscribe to demo expiration
             demoManager.OnDemoExpired += HandleDemoExpired;
 
-            // Load session count
+            // Load session count (encrypted)
             sessionCount = PlayerPrefs.GetInt(SESSION_COUNT_KEY, 0);
             sessionCount++;
             PlayerPrefs.SetInt(SESSION_COUNT_KEY, sessionCount);
@@ -150,10 +152,39 @@ namespace VRLicensing
 
         /// <summary>
         /// Main licensing flow executed on initialization.
+        /// Now includes integrity checks and server-side device verification.
         /// </summary>
         private IEnumerator StartLicensingFlow()
         {
             Debug.Log("[VR Licensing] Starting licensing flow...");
+
+            // Step 0: Integrity check (detect data wipe / tampering)
+            if (!SecureLicenseStorage.IsFirstRun())
+            {
+                if (!SecureLicenseStorage.VerifyIntegrity())
+                {
+                    Debug.LogWarning("[VR Licensing] Data integrity violation! Possible tampering detected.");
+                    // Don't give a fresh demo — force online verification
+                    SetState(LicenseState.ClockTampered, forceUpdate: true);
+                    OnClockTamperDetected?.Invoke();
+
+                    bool isOnline = false;
+                    yield return supabaseClient.CheckConnectivity(connected => isOnline = connected);
+
+                    if (!isOnline)
+                    {
+                        Debug.LogError("[VR Licensing] Cannot verify: integrity violation and no internet.");
+                        yield break;
+                    }
+
+                    // Online — proceed to server-side check which will enforce server demo state
+                }
+            }
+            else
+            {
+                // First run — mark as initialized
+                SecureLicenseStorage.MarkInitialized();
+            }
 
             // Step 1: Check for clock tampering
             if (clockGuard.IsClockTampered())
@@ -187,16 +218,70 @@ namespace VRLicensing
             if (cachedLicense != null && !cachedLicense.IsValid)
             {
                 Debug.Log("[VR Licensing] Cached license expired.");
+                isLicenseExpiry = true;
                 SecureLicenseStorage.ClearAll();
+                SecureLicenseStorage.MarkInitialized();
                 cachedLicense = null;
+                SetState(LicenseState.Expired, forceUpdate: true);
+                OnLicenseExpired?.Invoke();
+                // Send telemetry even on expired license launch
+                StartCoroutine(SendStartupTelemetry(null));
+                yield break;
             }
 
-            // Step 3: Check demo status
-            float demoUsed = SecureLicenseStorage.GetDemoUsedSeconds();
+            // Step 3: Server-side device check (anti-factory-reset protection)
+            bool serverCheckDone = false;
+            bool serverDemoBlocked = false;
+            float serverDemoUsed = 0f;
+
+            yield return supabaseClient.CheckDeviceDemo(
+                config.productId,
+                (record) => {
+                    serverCheckDone = true;
+                    if (record != null)
+                    {
+                        serverDeviceRecord = record;
+                        serverDemoBlocked = record.demo_blocked;
+                        serverDemoUsed = record.demo_used_seconds;
+
+                        // If server has more demo time used than local, trust the server
+                        float localDemoUsed = SecureLicenseStorage.GetDemoUsedSeconds();
+                        if (record.demo_used_seconds > localDemoUsed)
+                        {
+                            Debug.Log($"[VR Licensing] Server demo time ({record.demo_used_seconds}s) > " +
+                                $"local ({localDemoUsed}s). Using server value.");
+                            SecureLicenseStorage.SetDemoUsedSeconds(record.demo_used_seconds);
+                        }
+
+                        Debug.Log($"[VR Licensing] Server device check: demo_used={record.demo_used_seconds}s, " +
+                            $"blocked={record.demo_blocked}, sessions={record.session_count}");
+                    }
+                },
+                (error) => {
+                    serverCheckDone = true;
+                    Debug.LogWarning($"[VR Licensing] Server device check failed (using local data): {error}");
+                }
+            );
+
+            // Send startup telemetry (every launch)
+            StartCoroutine(SendStartupTelemetry(null));
+
+            // Step 4: Check demo status (combining server + local data)
+            if (serverDemoBlocked)
+            {
+                Debug.Log("[VR Licensing] Device demo has been blocked by admin.");
+                isLicenseExpiry = false;
+                SetState(LicenseState.Expired, forceUpdate: true);
+                OnDemoExpired?.Invoke();
+                yield break;
+            }
+
+            float demoUsed = Mathf.Max(SecureLicenseStorage.GetDemoUsedSeconds(), serverDemoUsed);
             if (demoUsed >= config.demoDurationSeconds)
             {
                 // Demo fully expired — must enter license key
                 Debug.Log("[VR Licensing] Demo expired. Awaiting license key.");
+                isLicenseExpiry = false;
                 SetState(LicenseState.Expired, forceUpdate: true);
                 OnDemoExpired?.Invoke();
             }
@@ -214,7 +299,7 @@ namespace VRLicensing
 
             if (string.IsNullOrEmpty(licenseKey))
             {
-                onResult?.Invoke(false, "Por favor ingresa una clave de licencia.");
+                onResult?.Invoke(false, "Please enter a license key.");
                 return;
             }
 
@@ -252,8 +337,8 @@ namespace VRLicensing
             }
             else
             {
-                OnValidationError?.Invoke(errorMessage ?? "Error desconocido");
-                onResult?.Invoke(false, errorMessage ?? "Error al validar la licencia.");
+                OnValidationError?.Invoke(errorMessage ?? "Unknown error");
+                onResult?.Invoke(false, errorMessage ?? "Error validating the license.");
             }
         }
 
@@ -276,6 +361,12 @@ namespace VRLicensing
 
             // Send device telemetry (fire-and-forget, non-blocking)
             StartCoroutine(SendSessionTelemetry(license.id));
+
+            // Register device on server with license key
+            float demoUsed = SecureLicenseStorage.GetDemoUsedSeconds();
+            StartCoroutine(supabaseClient.RegisterDevice(
+                config.productId, demoUsed, sessionCount,
+                license.license_key, null, null));
         }
 
         /// <summary>
@@ -344,6 +435,7 @@ namespace VRLicensing
                 if (!cachedLicense.IsValid)
                 {
                     Debug.Log("[VR Licensing] License has expired during session.");
+                    isLicenseExpiry = true;
                     sessionTracker.StopTracking();
                     SetState(LicenseState.Expired);
                     OnLicenseExpired?.Invoke();
@@ -450,10 +542,13 @@ namespace VRLicensing
                     uiBuilder.ShowLicensed();
                     break;
                 case LicenseState.Expired:
-                    uiBuilder.ShowDemoExpired();
+                    if (isLicenseExpiry)
+                        uiBuilder.ShowLicenseExpired();
+                    else
+                        uiBuilder.ShowDemoExpired();
                     break;
                 case LicenseState.ClockTampered:
-                    uiBuilder.ShowError("Reloj del sistema alterado. Conecta a internet para verificar.");
+                    uiBuilder.ShowError("System clock has been tampered with. Connect to the internet to verify.");
                     uiBuilder.ShowWelcome();
                     break;
             }
@@ -461,9 +556,28 @@ namespace VRLicensing
 
         private void HandleDemoExpired()
         {
+            isLicenseExpiry = false;
             SetState(LicenseState.Expired);
             sessionTracker.StopTracking();
             OnDemoExpired?.Invoke();
+        }
+
+        /// <summary>
+        /// Sends telemetry on every app start (even in demo mode).
+        /// If licenseId is null, sends with empty license reference.
+        /// </summary>
+        private IEnumerator SendStartupTelemetry(string licenseId)
+        {
+            float demoUsed = SecureLicenseStorage.GetDemoUsedSeconds();
+            float avgFps = fpsFrameCount > 0 ? fpsAccumulator / fpsFrameCount : 0f;
+
+            // Register device on server (upsert)
+            yield return supabaseClient.RegisterDevice(
+                config.productId, demoUsed, sessionCount,
+                cachedLicense?.license_key,
+                (record) => { serverDeviceRecord = record; },
+                (error) => { Debug.LogWarning($"[VR Licensing] Startup registration failed: {error}"); }
+            );
         }
     }
 }

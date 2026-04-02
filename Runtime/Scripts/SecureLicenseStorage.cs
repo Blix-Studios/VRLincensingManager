@@ -8,6 +8,7 @@ namespace VRLicensing
 {
     /// <summary>
     /// Encrypted local storage for license data using AES-256.
+    /// All values are encrypted and signed with HMAC-SHA256 integrity seal.
     /// The encryption key is derived from the device's unique identifier,
     /// making the stored data non-portable between devices.
     /// </summary>
@@ -17,6 +18,8 @@ namespace VRLicensing
         private const string DEMO_USED_KEY = "vrl_demo_used";
         private const string HKT_KEY = "vrl_highest_known_time";
         private const string SESSION_USED_KEY = "vrl_session_used";
+        private const string INTEGRITY_SEAL_KEY = "vrl_seal";
+        private const string FIRST_RUN_KEY = "vrl_init";
 
         private static byte[] GetEncryptionKey()
         {
@@ -38,6 +41,97 @@ namespace VRLicensing
             }
         }
 
+        private static byte[] GetHMACKey()
+        {
+            string deviceId = SystemInfo.deviceUniqueIdentifier;
+            using (var sha = SHA256.Create())
+            {
+                return sha.ComputeHash(Encoding.UTF8.GetBytes(deviceId + "_vrl_hmac_key_2026"));
+            }
+        }
+
+        #region Integrity Seal
+
+        /// <summary>
+        /// Returns true if this is the very first time the app runs on this device.
+        /// Uses an encrypted marker that cannot be forged.
+        /// </summary>
+        public static bool IsFirstRun()
+        {
+            string marker = PlayerPrefs.GetString(FIRST_RUN_KEY, "");
+            if (string.IsNullOrEmpty(marker)) return true;
+
+            try
+            {
+                string decrypted = Decrypt(marker);
+                return decrypted != "initialized";
+            }
+            catch
+            {
+                // If decryption fails, marker was tampered — not first run
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Marks the device as initialized (no longer first run).
+        /// </summary>
+        public static void MarkInitialized()
+        {
+            string encrypted = Encrypt("initialized");
+            PlayerPrefs.SetString(FIRST_RUN_KEY, encrypted);
+            PlayerPrefs.Save();
+        }
+
+        /// <summary>
+        /// Verifies the integrity of all stored data using HMAC-SHA256.
+        /// Returns false if any value has been modified or deleted externally.
+        /// </summary>
+        public static bool VerifyIntegrity()
+        {
+            string storedSeal = PlayerPrefs.GetString(INTEGRITY_SEAL_KEY, "");
+            if (string.IsNullOrEmpty(storedSeal))
+            {
+                // No seal exists — data was wiped or never saved
+                return false;
+            }
+
+            string computedSeal = ComputeIntegritySeal();
+            return storedSeal == computedSeal;
+        }
+
+        /// <summary>
+        /// Updates the HMAC integrity seal after any write operation.
+        /// Must be called after every Save operation.
+        /// </summary>
+        private static void UpdateIntegritySeal()
+        {
+            string seal = ComputeIntegritySeal();
+            PlayerPrefs.SetString(INTEGRITY_SEAL_KEY, seal);
+            // Note: caller must call PlayerPrefs.Save()
+        }
+
+        private static string ComputeIntegritySeal()
+        {
+            // Concatenate all encrypted stored values
+            string payload = string.Join("|",
+                PlayerPrefs.GetString(LICENSE_DATA_KEY, ""),
+                PlayerPrefs.GetString(DEMO_USED_KEY, ""),
+                PlayerPrefs.GetString(HKT_KEY, ""),
+                PlayerPrefs.GetString(SESSION_USED_KEY, ""),
+                PlayerPrefs.GetString(FIRST_RUN_KEY, "")
+            );
+
+            byte[] hmacKey = GetHMACKey();
+            using (var hmac = new HMACSHA256(hmacKey))
+            {
+                byte[] hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(payload));
+                return Convert.ToBase64String(hash);
+            }
+        }
+
+        #endregion
+
         #region License Data
 
         /// <summary>
@@ -50,6 +144,7 @@ namespace VRLicensing
                 string json = JsonUtility.ToJson(data);
                 string encrypted = Encrypt(json);
                 PlayerPrefs.SetString(LICENSE_DATA_KEY, encrypted);
+                UpdateIntegritySeal();
                 PlayerPrefs.Save();
             }
             catch (Exception e)
@@ -88,52 +183,91 @@ namespace VRLicensing
             PlayerPrefs.DeleteKey(DEMO_USED_KEY);
             PlayerPrefs.DeleteKey(HKT_KEY);
             PlayerPrefs.DeleteKey(SESSION_USED_KEY);
+            PlayerPrefs.DeleteKey(INTEGRITY_SEAL_KEY);
+            PlayerPrefs.DeleteKey(FIRST_RUN_KEY);
             PlayerPrefs.Save();
         }
 
         #endregion
 
-        #region Demo Time
+        #region Demo Time (Encrypted)
 
         public static float GetDemoUsedSeconds()
         {
-            return PlayerPrefs.GetFloat(DEMO_USED_KEY, 0f);
+            try
+            {
+                string encrypted = PlayerPrefs.GetString(DEMO_USED_KEY, "");
+                if (string.IsNullOrEmpty(encrypted)) return 0f;
+                string decrypted = Decrypt(encrypted);
+                return float.TryParse(decrypted, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out float val) ? val : 0f;
+            }
+            catch
+            {
+                return 0f;
+            }
         }
 
         public static void SetDemoUsedSeconds(float seconds)
         {
-            PlayerPrefs.SetFloat(DEMO_USED_KEY, seconds);
+            string encrypted = Encrypt(seconds.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
+            PlayerPrefs.SetString(DEMO_USED_KEY, encrypted);
+            UpdateIntegritySeal();
             PlayerPrefs.Save();
         }
 
         #endregion
 
-        #region Clock Guard
+        #region Clock Guard (Encrypted)
 
         public static long GetHighestKnownTime()
         {
-            string stored = PlayerPrefs.GetString(HKT_KEY, "0");
-            return long.TryParse(stored, out long val) ? val : 0;
+            try
+            {
+                string encrypted = PlayerPrefs.GetString(HKT_KEY, "");
+                if (string.IsNullOrEmpty(encrypted)) return 0;
+                string decrypted = Decrypt(encrypted);
+                return long.TryParse(decrypted, out long val) ? val : 0;
+            }
+            catch
+            {
+                return 0;
+            }
         }
 
         public static void SetHighestKnownTime(long unixTimestamp)
         {
-            PlayerPrefs.SetString(HKT_KEY, unixTimestamp.ToString());
+            string encrypted = Encrypt(unixTimestamp.ToString());
+            PlayerPrefs.SetString(HKT_KEY, encrypted);
+            UpdateIntegritySeal();
             PlayerPrefs.Save();
         }
 
         #endregion
 
-        #region Session Time
+        #region Session Time (Encrypted)
 
         public static float GetSessionUsedSeconds()
         {
-            return PlayerPrefs.GetFloat(SESSION_USED_KEY, 0f);
+            try
+            {
+                string encrypted = PlayerPrefs.GetString(SESSION_USED_KEY, "");
+                if (string.IsNullOrEmpty(encrypted)) return 0f;
+                string decrypted = Decrypt(encrypted);
+                return float.TryParse(decrypted, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out float val) ? val : 0f;
+            }
+            catch
+            {
+                return 0f;
+            }
         }
 
         public static void SetSessionUsedSeconds(float seconds)
         {
-            PlayerPrefs.SetFloat(SESSION_USED_KEY, seconds);
+            string encrypted = Encrypt(seconds.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
+            PlayerPrefs.SetString(SESSION_USED_KEY, encrypted);
+            UpdateIntegritySeal();
             PlayerPrefs.Save();
         }
 

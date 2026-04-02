@@ -59,6 +59,13 @@ namespace VRLicensing
         private TextMeshProUGUI expiredActivateButtonText;
         private TextMeshProUGUI expiredStatusText;
 
+        // License Expired Panel
+        private GameObject licenseExpiredPanel;
+        private TMP_InputField[] licExpiredKeyFields;
+        private Button licExpiredActivateButton;
+        private TextMeshProUGUI licExpiredActivateButtonText;
+        private TextMeshProUGUI licExpiredStatusText;
+
         // Success Panel
         private GameObject successPanel;
 
@@ -92,6 +99,7 @@ namespace VRLicensing
             welcomePanel.SetActive(true);
             keyInputPanel.SetActive(false);
             demoExpiredPanel.SetActive(false);
+            licenseExpiredPanel.SetActive(false);
             successPanel.SetActive(false);
 
             float hours = config.demoDurationSeconds / 3600f;
@@ -102,7 +110,7 @@ namespace VRLicensing
                 if (dm != null) used = dm.TotalDemoUsedSeconds;
             }
             float remainingH = Mathf.Max(0, (config.demoDurationSeconds - used) / 3600f);
-            welcomeInfoText.text = $"Demo gratuita: {remainingH:F1}h restantes de {hours:F0}h";
+            welcomeInfoText.text = $"Free demo: {remainingH:F1}h remaining of {hours:F0}h";
         }
 
         /// <summary>Shows the Key Input panel for entering a license key.</summary>
@@ -113,6 +121,7 @@ namespace VRLicensing
             welcomePanel.SetActive(false);
             keyInputPanel.SetActive(true);
             demoExpiredPanel.SetActive(false);
+            licenseExpiredPanel.SetActive(false);
             successPanel.SetActive(false);
             statusText.text = "";
             ClearKeyFields(keyFields);
@@ -126,9 +135,24 @@ namespace VRLicensing
             welcomePanel.SetActive(false);
             keyInputPanel.SetActive(false);
             demoExpiredPanel.SetActive(true);
+            licenseExpiredPanel.SetActive(false);
             successPanel.SetActive(false);
             expiredStatusText.text = "";
             ClearKeyFields(expiredKeyFields);
+        }
+
+        /// <summary>Shows the License Expired panel (renewal option).</summary>
+        public void ShowLicenseExpired()
+        {
+            EnsurePositioned();
+            overlayPanel.SetActive(true);
+            welcomePanel.SetActive(false);
+            keyInputPanel.SetActive(false);
+            demoExpiredPanel.SetActive(false);
+            licenseExpiredPanel.SetActive(true);
+            successPanel.SetActive(false);
+            licExpiredStatusText.text = "";
+            ClearKeyFields(licExpiredKeyFields);
         }
 
         /// <summary>Hides all UI (license valid or demo running).</summary>
@@ -156,10 +180,15 @@ namespace VRLicensing
                 expiredStatusText.text = message;
                 expiredStatusText.color = COLOR_ERROR;
             }
+            else if (licenseExpiredPanel.activeSelf)
+            {
+                licExpiredStatusText.text = message;
+                licExpiredStatusText.color = COLOR_ERROR;
+            }
         }
 
         /// <summary>Shows a success message on the active panel.</summary>
-        public void ShowSuccess(string message = "Licencia activada correctamente")
+        public void ShowSuccess(string message = "License activated successfully")
         {
             if (keyInputPanel.activeSelf)
             {
@@ -171,6 +200,11 @@ namespace VRLicensing
                 expiredStatusText.text = message;
                 expiredStatusText.color = COLOR_SUCCESS;
             }
+            else if (licenseExpiredPanel.activeSelf)
+            {
+                licExpiredStatusText.text = message;
+                licExpiredStatusText.color = COLOR_SUCCESS;
+            }
         }
 
         /// <summary>Sets loading state on activate buttons.</summary>
@@ -179,12 +213,17 @@ namespace VRLicensing
             if (activateButton != null)
             {
                 activateButton.interactable = !loading;
-                activateButtonText.text = loading ? "Validando..." : "Activar Licencia";
+                activateButtonText.text = loading ? "Validating..." : "Activate License";
             }
             if (expiredActivateButton != null)
             {
                 expiredActivateButton.interactable = !loading;
-                expiredActivateButtonText.text = loading ? "Validando..." : "Activar Licencia";
+                expiredActivateButtonText.text = loading ? "Validating..." : "Activate License";
+            }
+            if (licExpiredActivateButton != null)
+            {
+                licExpiredActivateButton.interactable = !loading;
+                licExpiredActivateButtonText.text = loading ? "Validating..." : "Activate License";
             }
         }
 
@@ -197,6 +236,7 @@ namespace VRLicensing
             BuildWelcomePanel();
             BuildKeyInputPanel();
             BuildDemoExpiredPanel();
+            BuildLicenseExpiredPanel();
             BuildSuccessPanel();
 
             // Start hidden
@@ -224,12 +264,12 @@ namespace VRLicensing
             {
                 canvasGo.AddComponent(xrRaycasterType);
                 addedXR = true;
-                Debug.Log("[VR Licensing] TrackedDeviceGraphicRaycaster agregado.");
+                Debug.Log("[VR Licensing] TrackedDeviceGraphicRaycaster added.");
             }
             if (!addedXR)
             {
                 canvasGo.AddComponent<GraphicRaycaster>();
-                Debug.Log("[VR Licensing] GraphicRaycaster estandar agregado.");
+                Debug.Log("[VR Licensing] Standard GraphicRaycaster added.");
             }
 
             // Canvas size
@@ -276,7 +316,7 @@ namespace VRLicensing
 
             // Subtitle
             CreateTMPText("WelcomeSubtitle", panelRt,
-                "Selecciona una opcion para continuar",
+                "Select an option to continue",
                 14, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
                 size: new Vector2(500, 30), pos: new Vector2(0, -85));
@@ -299,19 +339,19 @@ namespace VRLicensing
 
             // Button 1: Start Demo (green)
             CreateLayoutButton("StartDemoBtn", btnContRt,
-                "Iniciar Demo Gratuita", 45,
+                "Start Free Demo", 45,
                 COLOR_GREEN, COLOR_GREEN_HOVER,
                 OnStartDemoClicked);
 
             // Button 2: Enter License Key (blue accent)
             CreateLayoutButton("EnterKeyBtn", btnContRt,
-                "Ingresar Clave de Licencia", 45,
+                "Enter License Key", 45,
                 COLOR_ACCENT, COLOR_ACCENT_HOVER,
                 OnEnterKeyClicked);
 
             // Button 3: Scan QR Passthrough (secondary)
             CreateLayoutButton("ScanQRBtn", btnContRt,
-                "Escanear QR (Passthrough)", 45,
+                "Scan QR (Passthrough)", 45,
                 COLOR_SECONDARY, COLOR_SECONDARY_HOVER,
                 OnScanQRClicked);
 
@@ -345,13 +385,13 @@ namespace VRLicensing
             headerRt.anchoredPosition = Vector2.zero;
 
             CreateTMPText("KeyTitle", headerRt,
-                "Ingresar Clave de Licencia",
+                "Enter License Key",
                 20, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
                 stretch: true, padding: new Vector4(20, 20, 0, 0));
 
             // Subtitle
             CreateTMPText("KeySubtitle", panelRt,
-                "Ingresa tu clave de licencia (formato XXXX-XXXX-XXXX-XXXX)",
+                "Enter your license key (format XXXX-XXXX-XXXX-XXXX)",
                 13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
                 size: new Vector2(550, 25), pos: new Vector2(0, -72));
@@ -361,7 +401,7 @@ namespace VRLicensing
 
             // Activate button
             activateButton = CreatePositionedButton("ActivateBtn", panelRt,
-                "Activar Licencia", new Vector2(260, 42), new Vector2(0, -40),
+                "Activate License", new Vector2(260, 42), new Vector2(0, -40),
                 COLOR_ACCENT, COLOR_ACCENT_HOVER, OnActivateClicked);
             activateButtonText = activateButton.GetComponentInChildren<TextMeshProUGUI>();
 
@@ -373,7 +413,7 @@ namespace VRLicensing
 
             // Back button
             CreatePositionedButton("BackBtn", panelRt,
-                "Volver", new Vector2(120, 35), new Vector2(0, 15),
+                "Back", new Vector2(120, 35), new Vector2(0, 15),
                 COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnBackClicked,
                 anchorAtBottom: true);
 
@@ -403,13 +443,13 @@ namespace VRLicensing
             headerRt.anchoredPosition = Vector2.zero;
 
             CreateTMPText("ExpTitle", headerRt,
-                "Demo Expirado",
+                "Demo Expired",
                 20, FontStyles.Bold, COLOR_ERROR, TextAlignmentOptions.Center,
                 stretch: true, padding: new Vector4(20, 20, 0, 0));
 
             // Message
             CreateTMPText("ExpMsg", panelRt,
-                $"Tu periodo de prueba de {config.appDisplayName} ha terminado.\nIngresa una clave de licencia para continuar.",
+                $"Your trial period for {config.appDisplayName} has ended.\nEnter a license key to continue.",
                 13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
                 size: new Vector2(550, 45), pos: new Vector2(0, -72));
@@ -419,7 +459,7 @@ namespace VRLicensing
 
             // Activate button
             expiredActivateButton = CreatePositionedButton("ExpActivateBtn", panelRt,
-                "Activar Licencia", new Vector2(260, 42), new Vector2(0, -45),
+                "Activate License", new Vector2(260, 42), new Vector2(0, -45),
                 COLOR_ACCENT, COLOR_ACCENT_HOVER, OnExpiredActivateClicked);
             expiredActivateButtonText = expiredActivateButton.GetComponentInChildren<TextMeshProUGUI>();
 
@@ -431,11 +471,69 @@ namespace VRLicensing
 
             // Scan QR button
             CreatePositionedButton("ExpScanQR", panelRt,
-                "Escanear QR (Passthrough)", new Vector2(260, 35), new Vector2(0, 18),
+                "Scan QR (Passthrough)", new Vector2(260, 35), new Vector2(0, 18),
                 COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnScanQRClicked,
                 anchorAtBottom: true);
 
             demoExpiredPanel.SetActive(false);
+        }
+
+        // ─────────────────── LICENSE EXPIRED PANEL ───────────────────
+
+        private void BuildLicenseExpiredPanel()
+        {
+            var overlayRt = overlayPanel.GetComponent<RectTransform>();
+
+            licenseExpiredPanel = CreatePanel("LicenseExpiredPanel", overlayRt, COLOR_PANEL_BG);
+            var panelRt = licenseExpiredPanel.GetComponent<RectTransform>();
+            panelRt.anchorMin = new Vector2(0.5f, 0.5f);
+            panelRt.anchorMax = new Vector2(0.5f, 0.5f);
+            panelRt.sizeDelta = new Vector2(650, 400);
+            panelRt.anchoredPosition = Vector2.zero;
+
+            // Header with amber/orange warning color
+            var header = CreatePanel("LicExpHeader", panelRt, COLOR_PANEL_HEADER);
+            var headerRt = header.GetComponent<RectTransform>();
+            headerRt.anchorMin = new Vector2(0f, 1f);
+            headerRt.anchorMax = new Vector2(1f, 1f);
+            headerRt.pivot = new Vector2(0.5f, 1f);
+            headerRt.sizeDelta = new Vector2(0, 60);
+            headerRt.anchoredPosition = Vector2.zero;
+
+            CreateTMPText("LicExpTitle", headerRt,
+                "License Expired",
+                20, FontStyles.Bold, new Color(1f, 0.65f, 0.15f, 1f), TextAlignmentOptions.Center,
+                stretch: true, padding: new Vector4(20, 20, 0, 0));
+
+            // Message
+            CreateTMPText("LicExpMsg", panelRt,
+                $"Your license for {config.appDisplayName} has expired.\nRenew on the web portal or enter a new key.",
+                13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
+                size: new Vector2(550, 45), pos: new Vector2(0, -72));
+
+            // Key fields
+            licExpiredKeyFields = BuildKeyFieldRow("LicExpKeyFields", panelRt, new Vector2(0, 10));
+
+            // Activate button
+            licExpiredActivateButton = CreatePositionedButton("LicExpActivateBtn", panelRt,
+                "Activate License", new Vector2(260, 42), new Vector2(0, -45),
+                COLOR_ACCENT, COLOR_ACCENT_HOVER, OnLicExpiredActivateClicked);
+            licExpiredActivateButtonText = licExpiredActivateButton.GetComponentInChildren<TextMeshProUGUI>();
+
+            // Status
+            licExpiredStatusText = CreateTMPText("LicExpStatusText", panelRt,
+                "", 13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 0f), pivot: new Vector2(0.5f, 0f),
+                size: new Vector2(500, 25), pos: new Vector2(0, 55));
+
+            // Scan QR button
+            CreatePositionedButton("LicExpScanQR", panelRt,
+                "Scan QR (Passthrough)", new Vector2(260, 35), new Vector2(0, 18),
+                COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnScanQRClicked,
+                anchorAtBottom: true);
+
+            licenseExpiredPanel.SetActive(false);
         }
 
         // ─────────────────── SUCCESS PANEL ───────────────────
@@ -491,14 +589,14 @@ namespace VRLicensing
 
             // ── Title text ──
             CreateTMPText("SuccessTitle", successContentRt,
-                "\u00a1Clave redimida con \u00e9xito!",
+                "\u00a1Key redeemed successfully!",
                 26, FontStyles.Bold, COLOR_SUCCESS, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
                 size: new Vector2(480, 40), pos: new Vector2(0, -135));
 
             // ── Subtitle text ──
             CreateTMPText("SuccessSubtitle", successContentRt,
-                "Tu licencia ha sido activada correctamente.\nEl simulador se desbloqueara automaticamente.",
+                "Your license has been activated successfully.\nThe simulator will unlock automatically.",
                 14, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
                 size: new Vector2(420, 50), pos: new Vector2(0, -182));
@@ -553,17 +651,24 @@ namespace VRLicensing
             SubmitKey(key);
         }
 
+        private void OnLicExpiredActivateClicked()
+        {
+            string key = GetKeyFromFields(licExpiredKeyFields);
+            SubmitKey(key);
+        }
+
         private void SubmitKey(string key)
         {
             if (string.IsNullOrEmpty(key) || key.Replace("-", "").Length < 16)
             {
-                ShowError("Ingresa la clave completa (XXXX-XXXX-XXXX-XXXX)");
+                ShowError("Enter the full key (XXXX-XXXX-XXXX-XXXX)");
                 return;
             }
 
             SetLoading(true);
             statusText.text = "";
             expiredStatusText.text = "";
+            licExpiredStatusText.text = "";
 
             manager.SubmitLicenseKey(key, (success, error) =>
             {
@@ -575,7 +680,7 @@ namespace VRLicensing
                 }
                 else
                 {
-                    ShowError(error ?? "Error al validar la licencia.");
+                    ShowError(error ?? "Error validating the license.");
                 }
             });
         }
@@ -646,11 +751,11 @@ namespace VRLicensing
                 // Snap On Enable
                 SetNestedXRI3Field(lazyFollowType, lazyFollowInstance, "m_GeneralFollowParams", "m_SnapOnEnable", "snapOnEnable", true, flags);
 
-                Debug.Log($"[VR Licensing] LazyFollow agregado (targetOffset.z = {CANVAS_DISTANCE}).");
+                Debug.Log($"[VR Licensing] LazyFollow added (targetOffset.z = {CANVAS_DISTANCE}).");
             }
             else
             {
-                Debug.Log("[VR Licensing] LazyFollow no disponible, posicionamiento manual.");
+                Debug.Log("[VR Licensing] LazyFollow not available, using manual positioning.");
             }
         }
 

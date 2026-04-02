@@ -2,33 +2,32 @@ using UnityEngine;
 
 namespace VRLicensing
 {
-    [CreateAssetMenu(fileName = "LicenseConfig", menuName = "VR Licensing/Nueva Configuracion")]
+    [CreateAssetMenu(fileName = "LicenseConfig", menuName = "VR Licensing/New Configuration")]
     public class LicenseConfig : ScriptableObject
     {
-        [Header("Conexión Supabase")]
-        [Tooltip("URL de tu proyecto Supabase (ej: https://xxx.supabase.co)")]
-        public string supabaseUrl;
+        [HideInInspector]
+        public string supabaseUrl = "https://eckpfjebvggzxfpjuzha.supabase.co";
 
-        [Tooltip("Clave pública anon de Supabase")]
-        public string anonKey;
+        [HideInInspector]
+        public string anonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVja3BmamVidmdnenhmcGp1emhhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDk5MjM4MTgsImV4cCI6MjA2NTQ5OTgxOH0.U4cb9vPcLVkboKQlptWujbFeG1OcLQyBfoWF-NIpUmI";
 
-        [Header("Producto")]
-        [Tooltip("ID del producto/simulador en la tabla products de Supabase")]
+        [Header("Product")]
+        [Tooltip("Product/simulator ID in the Supabase products table")]
         public int productId;
 
-        [Header("Seguridad")]
+        [Header("Security")]
         [TextArea(3, 6)]
-        [Tooltip("Clave pública RSA en formato PEM (para futura verificación JWT)")]
+        [Tooltip("RSA public key in PEM format (for future JWT offline verification)")]
         public string rsaPublicKeyPem;
 
-        [Header("Ajustes del Simulador")]
-        [Tooltip("Tiempo máximo de demo en segundos (default: 3600 = 1 hora)")]
+        [Header("Simulator Settings")]
+        [Tooltip("Maximum demo time in seconds (default: 3600 = 1 hour)")]
         public float demoDurationSeconds = 3600f;
 
-        [Tooltip("Horas máximas offline antes de exigir reconexión (default: 72)")]
+        [Tooltip("Maximum hours offline before requiring reconnection (default: 72)")]
         public float maxOfflineHours = 72f;
 
-        [Tooltip("Nombre visible del simulador (se muestra en la UI de licencias)")]
-        public string appDisplayName = "Simulador VR";
+        [Tooltip("Visible simulator name (displayed in the licensing UI)")]
+        public string appDisplayName = "VR Simulator";
     }
 }
