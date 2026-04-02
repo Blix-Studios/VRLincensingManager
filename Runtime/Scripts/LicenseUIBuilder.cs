@@ -440,21 +440,81 @@ namespace VRLicensing
 
         // ─────────────────── SUCCESS PANEL ───────────────────
 
+        private CanvasGroup successCanvasGroup;
+        private RectTransform successContentRt;
+
         private void BuildSuccessPanel()
         {
             var overlayRt = overlayPanel.GetComponent<RectTransform>();
 
-            successPanel = CreatePanel("SuccessPanel", overlayRt, new Color(0.05f, 0.12f, 0.05f, 0.95f));
+            // Main container panel with dark semi-transparent bg
+            successPanel = CreatePanel("SuccessPanel", overlayRt, new Color(0.04f, 0.06f, 0.10f, 0.92f));
             var panelRt = successPanel.GetComponent<RectTransform>();
-            panelRt.anchorMin = new Vector2(0.5f, 0.5f);
-            panelRt.anchorMax = new Vector2(0.5f, 0.5f);
-            panelRt.sizeDelta = new Vector2(420, 160);
-            panelRt.anchoredPosition = Vector2.zero;
+            panelRt.anchorMin = Vector2.zero;
+            panelRt.anchorMax = Vector2.one;
+            panelRt.offsetMin = Vector2.zero;
+            panelRt.offsetMax = Vector2.zero;
 
-            CreateTMPText("SuccessText", panelRt,
-                "Licencia Activada!\nDisfruta el simulador!",
-                24, FontStyles.Bold, COLOR_SUCCESS, TextAlignmentOptions.Center,
-                stretch: true, padding: new Vector4(30, 30, 30, 30));
+            // CanvasGroup for fade animation
+            successCanvasGroup = successPanel.AddComponent<CanvasGroup>();
+            successCanvasGroup.alpha = 0f;
+
+            // Content container (this is what scales up)
+            var content = CreatePanel("SuccessContent", panelRt, Color.clear);
+            successContentRt = content.GetComponent<RectTransform>();
+            successContentRt.anchorMin = new Vector2(0.5f, 0.5f);
+            successContentRt.anchorMax = new Vector2(0.5f, 0.5f);
+            successContentRt.sizeDelta = new Vector2(500, 320);
+            successContentRt.anchoredPosition = Vector2.zero;
+            successContentRt.localScale = Vector3.one * 0.5f;
+
+            // ── Green circle background for checkmark ──
+            var circleBg = new GameObject("CheckCircle");
+            circleBg.transform.SetParent(successContentRt, false);
+            var circleRt = circleBg.AddComponent<RectTransform>();
+            circleRt.anchorMin = new Vector2(0.5f, 1f);
+            circleRt.anchorMax = new Vector2(0.5f, 1f);
+            circleRt.pivot = new Vector2(0.5f, 1f);
+            circleRt.sizeDelta = new Vector2(100, 100);
+            circleRt.anchoredPosition = new Vector2(0, -20);
+
+            var circleImg = circleBg.AddComponent<Image>();
+            circleImg.color = COLOR_SUCCESS;
+            circleImg.raycastTarget = false;
+            // Note: Image is a square, but visually works well as a badge
+
+            // ── Checkmark text (using Unicode ✓) ──
+            CreateTMPText("CheckMark", circleRt,
+                "\u2714",
+                52, FontStyles.Bold, Color.white, TextAlignmentOptions.Center,
+                stretch: true, padding: new Vector4(10, 10, 10, 10));
+
+            // ── Title text ──
+            CreateTMPText("SuccessTitle", successContentRt,
+                "\u00a1Clave redimida con \u00e9xito!",
+                26, FontStyles.Bold, COLOR_SUCCESS, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
+                size: new Vector2(480, 40), pos: new Vector2(0, -135));
+
+            // ── Subtitle text ──
+            CreateTMPText("SuccessSubtitle", successContentRt,
+                "Tu licencia ha sido activada correctamente.\nEl simulador se desbloqueara automaticamente.",
+                14, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
+                size: new Vector2(420, 50), pos: new Vector2(0, -182));
+
+            // ── Decorative glow bar ──
+            var glowBar = new GameObject("GlowBar");
+            glowBar.transform.SetParent(successContentRt, false);
+            var glowRt = glowBar.AddComponent<RectTransform>();
+            glowRt.anchorMin = new Vector2(0.5f, 1f);
+            glowRt.anchorMax = new Vector2(0.5f, 1f);
+            glowRt.pivot = new Vector2(0.5f, 0.5f);
+            glowRt.sizeDelta = new Vector2(200, 3);
+            glowRt.anchoredPosition = new Vector2(0, -240);
+            var glowImg = glowBar.AddComponent<Image>();
+            glowImg.color = new Color(COLOR_SUCCESS.r, COLOR_SUCCESS.g, COLOR_SUCCESS.b, 0.4f);
+            glowImg.raycastTarget = false;
 
             successPanel.SetActive(false);
         }
@@ -1036,7 +1096,41 @@ namespace VRLicensing
             demoExpiredPanel.SetActive(false);
             successPanel.SetActive(true);
 
-            yield return new WaitForSeconds(2f);
+            // Reset animation state
+            successCanvasGroup.alpha = 0f;
+            successContentRt.localScale = Vector3.one * 0.5f;
+
+            // ── Animate IN: scale up + fade in (0.45s) ──
+            float animDuration = 0.45f;
+            float elapsed = 0f;
+            while (elapsed < animDuration)
+            {
+                elapsed += Time.unscaledDeltaTime;
+                float t = Mathf.Clamp01(elapsed / animDuration);
+                // Ease-out back curve for a satisfying "pop"
+                float easeT = 1f - Mathf.Pow(1f - t, 3f);
+                float scaleT = 1f + 0.05f * Mathf.Sin(t * Mathf.PI); // slight overshoot
+
+                successCanvasGroup.alpha = easeT;
+                successContentRt.localScale = Vector3.one * (0.5f + 0.5f * easeT) * scaleT;
+                yield return null;
+            }
+            successCanvasGroup.alpha = 1f;
+            successContentRt.localScale = Vector3.one;
+
+            // ── Hold visible for 2.5 seconds ──
+            yield return new WaitForSeconds(2.5f);
+
+            // ── Animate OUT: fade out (0.4s) ──
+            float fadeOutDuration = 0.4f;
+            elapsed = 0f;
+            while (elapsed < fadeOutDuration)
+            {
+                elapsed += Time.unscaledDeltaTime;
+                float t = Mathf.Clamp01(elapsed / fadeOutDuration);
+                successCanvasGroup.alpha = 1f - t;
+                yield return null;
+            }
 
             successPanel.SetActive(false);
             overlayPanel.SetActive(false);

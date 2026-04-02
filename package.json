@@ -1,6 +1,6 @@
 {
     "name": "com.blixstudios.vr-licensing",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "displayName": "VR Licensing System",
     "description": "Módulo genérico de licencias y registro de claves para simuladores VR en Meta Quest. Incluye validación online, modo demo, almacenamiento encriptado y protección anti-manipulación.",
     "unity": "6000.0",
