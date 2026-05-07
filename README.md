@@ -1,6 +1,6 @@
 # VR Licensing System — Unity UPM Package
 
-[![Unity](https://img.shields.io/badge/Unity-6000.0%2B-black?logo=unity)](https://unity.com/)
+[![Unity](https://img.shields.io/badge/Unity-2021.3%2B-black?logo=unity)](https://unity.com/)
 [![Platform](https://img.shields.io/badge/Platform-Meta%20Quest-blue)](https://www.meta.com/quest/)
 
 Módulo genérico de licencias y registro de claves para simuladores VR en Meta Quest. Se instala como paquete UPM vía Git y se conecta a **Supabase** para validación de claves.
@@ -25,7 +25,7 @@ Window > Package Manager > + > Add package from git URL...
 
 Pegar:
 ```
-https://github.com/BlixStudios/com.blixstudios.vr-licensing.git#v1.0.0
+https://github.com/BlixStudios/com.blixstudios.vr-licensing.git#v1.0.3
 ```
 
 ### Opción B — Editar manifest.json
@@ -34,7 +34,7 @@ Agregar a `Packages/manifest.json`:
 ```json
 {
     "dependencies": {
-        "com.blixstudios.vr-licensing": "https://github.com/BlixStudios/com.blixstudios.vr-licensing.git#v1.0.0"
+        "com.blixstudios.vr-licensing": "https://github.com/BlixStudios/com.blixstudios.vr-licensing.git#v1.0.3"
     }
 }
 ```
@@ -70,6 +70,35 @@ Crear un prefab llamado `LicenseGateUI` con el componente `LicenseManager` y col
 ### 4. ¡Listo!
 
 Al dar Play, el sistema se auto-inicializa antes de cargar cualquier escena.
+
+## Testing with Sandbox Licenses
+
+Pre-provisioned sandbox license keys are available for external teams to test the SDK without needing access to the Supabase web portal. These are **real license entries** in the production database.
+
+### Available Sandbox Keys
+
+| License Key | Product ID | Product Name |
+|---|---|---|
+| `SBOX-TEST-CHN1-0001` | 1 | VR Chainsaw Training |
+| `SBOX-TEST-TRK2-0002` | 2 | VR Truck Platform Training |
+| `SBOX-TEST-FRK3-0003` | 3 | VR Forklift Training |
+| `SBOX-TEST-SWP4-0004` | 4 | VR Road Sweeper Training |
+
+All sandbox keys are `annual` licenses valid until **2030-12-31**.
+
+### How to Test
+
+1. Install the UPM package (see [Installation](#instalación) above).
+2. Create a `LicenseConfig` asset via `Assets > Create > VR Licensing > New Configuration`.
+3. Set the **Product Id** field to the number matching the simulator you are building (1–4).
+4. Place the config in `Assets/Resources/` named `LicenseConfig`.
+5. Press **Play** in Unity — the licensing UI will appear.
+6. Click **Enter License Key** and enter the matching sandbox key (e.g., `SBOX-TEST-CHN1-0001` for Product 1).
+7. The license will validate against Supabase and activate successfully.
+
+> **Note:** These sandbox keys work identically to real customer keys. When building the final production version, simply replace the sandbox key with the customer's actual purchased key.
+
+---
 
 ## Arquitectura
 
@@ -141,7 +170,7 @@ Editor/
 
 ## Requisitos
 
-- **Unity** 6000.0+ (probado en 6000.3.10f1)
+- **Unity** 2021.3+ (tested on 2022.3.48f1 and 6000.3.10f1)
 - **Meta XR SDK** (opcional, para obtener Oculus User ID)
 - **Supabase** proyecto con tabla `user_licenses`
 - **IL2CPP** scripting backend (estándar para Quest builds)
