@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using UnityEngine;
+using UnityEngine.Networking;
 
 namespace VRLicensing
 {
@@ -37,6 +38,8 @@ namespace VRLicensing
         private LicenseConfig config;
         private LicenseData cachedLicense;
         private BrandingData cachedBranding;
+        private Texture2D cachedBrandingLogo;
+        private Sprite cachedBrandingSprite;
         private LicenseUIBuilder uiBuilder;
         private DeviceRegistryData serverDeviceRecord;
         private int sessionCount;
@@ -61,6 +64,18 @@ namespace VRLicensing
         /// Returns null if no branding has been configured.
         /// </summary>
         public BrandingData ActiveBranding => cachedBranding;
+
+        /// <summary>
+        /// The downloaded branding logo as a Texture2D.
+        /// Available after OnBrandingLogoReady fires. Null if no logo configured.
+        /// </summary>
+        public Texture2D BrandingLogoTexture => cachedBrandingLogo;
+
+        /// <summary>
+        /// The downloaded branding logo as a Sprite (created from BrandingLogoTexture).
+        /// Available after OnBrandingLogoReady fires. Null if no logo configured.
+        /// </summary>
+        public Sprite BrandingLogoSprite => cachedBrandingSprite;
 
         /// <summary>
         /// The configuration used by this manager.
@@ -97,6 +112,12 @@ namespace VRLicensing
         /// Parameter is null if no branding is configured by the client.
         /// </summary>
         public event Action<BrandingData> OnBrandingLoaded;
+
+        /// <summary>
+        /// Fired when the branding logo image has been downloaded and is ready as Texture2D/Sprite.
+        /// Parameters: (Texture2D logoTexture, Sprite logoSprite). Both null if no logo configured.
+        /// </summary>
+        public event Action<Texture2D, Sprite> OnBrandingLogoReady;
 
         #endregion
 
@@ -385,10 +406,21 @@ namespace VRLicensing
                     if (branding != null && branding.HasBranding)
                     {
                         Debug.Log($"[VR Licensing] Client branding: \"{branding.brand_name}\"");
+
+                        // Download logo image if URL is provided
+                        if (!string.IsNullOrEmpty(branding.logo_url))
+                        {
+                            StartCoroutine(DownloadBrandingLogo(branding.logo_url));
+                        }
+                        else
+                        {
+                            OnBrandingLogoReady?.Invoke(null, null);
+                        }
                     }
                     else
                     {
                         Debug.Log("[VR Licensing] No client branding configured — using defaults.");
+                        OnBrandingLogoReady?.Invoke(null, null);
                     }
                 },
                 (error) =>
@@ -396,8 +428,53 @@ namespace VRLicensing
                     Debug.LogWarning($"[VR Licensing] Could not fetch branding: {error}");
                     cachedBranding = null;
                     OnBrandingLoaded?.Invoke(null);
+                    OnBrandingLogoReady?.Invoke(null, null);
                 }
             );
+        }
+
+        /// <summary>
+        /// Downloads the branding logo from the URL and caches it as Texture2D and Sprite.
+        /// Fires OnBrandingLogoReady when done.
+        /// </summary>
+        private IEnumerator DownloadBrandingLogo(string logoUrl)
+        {
+            Debug.Log($"[VR Licensing] Downloading branding logo from: {logoUrl}");
+
+            using (var request = UnityWebRequestTexture.GetTexture(logoUrl))
+            {
+                request.timeout = 15;
+
+                yield return request.SendWebRequest();
+
+                if (request.result != UnityWebRequest.Result.Success)
+                {
+                    Debug.LogWarning($"[VR Licensing] Failed to download branding logo: {request.error}");
+                    cachedBrandingLogo = null;
+                    cachedBrandingSprite = null;
+                    OnBrandingLogoReady?.Invoke(null, null);
+                    yield break;
+                }
+
+                Texture2D texture = DownloadHandlerTexture.GetContent(request);
+                texture.name = "BrandingLogo";
+
+                // Create a Sprite from the Texture2D
+                Sprite sprite = Sprite.Create(
+                    texture,
+                    new Rect(0, 0, texture.width, texture.height),
+                    new Vector2(0.5f, 0.5f),
+                    100f
+                );
+                sprite.name = "BrandingLogoSprite";
+
+                cachedBrandingLogo = texture;
+                cachedBrandingSprite = sprite;
+
+                Debug.Log($"[VR Licensing] Branding logo downloaded: {texture.width}x{texture.height}px");
+
+                OnBrandingLogoReady?.Invoke(texture, sprite);
+            }
         }
 
         /// <summary>

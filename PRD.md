@@ -41,7 +41,7 @@ El paquete está diseñado para ser "plug-and-play" en cualquier proyecto Unity 
 Ubicación principal: `Runtime/Scripts/`
 
 ### 🏗️ Core & Orchestration
-- **`LicenseManager.cs`**: Orquestador principal. Máquina de estados. Controla el flujo entre empezar demos, someter claves de licencia, y notificar a la UI los cambios de estado correspondientes.
+- **`LicenseManager.cs`**: Orquestador principal. Máquina de estados. Controla el flujo entre empezar demos, someter claves de licencia, y notificar a la UI los cambios de estado correspondientes. Expone el branding del cliente vía `ActiveBranding`, `BrandingLogoTexture`, `BrandingLogoSprite` y los eventos `OnBrandingLoaded` / `OnBrandingLogoReady`. La descarga de la imagen del logo se realiza automáticamente vía `UnityWebRequestTexture` al activar una licencia.
 - **`LicenseBootstrapper.cs`**: Script automático (`[RuntimeInitializeOnLoadMethod(BeforeSceneLoad)]`). Carga la configuración (`LicenseConfig`) y levanta el `LicenseManager` y la UI apenas el proyecto arranca.
 - **`LicenseConfig.cs`**: `ScriptableObject` donde el desarrollador introduce su `Supabase URL`, `PlayFab ID`/`Product ID`, tiempo de demo y nombre de la App.
 
@@ -56,6 +56,7 @@ Ubicación principal: `Runtime/Scripts/`
 - **`SupabaseClient.cs`**: Cliente REST HTTP ligero para conectarse a Supabase de Blix Studios.
   - Ejecuta la llamada a la Edge Function (`/functions/v1/redeem-license`) para validar si la clave existe y consumirla.
   - Soporta caché de JWT local para validaciones offline (hasta `maxOfflineHours`).
+  - Consulta la tabla `license_branding` para obtener el branding personalizado del cliente (`brand_name`, `logo_url`).
 
 ### ⏳ Manejo de Tiempo (Demo Mode)
 - **`DemoModeManager.cs`**: Trackea el progreso en tiempo real durante la sesión de juego. Al expirar dispara los eventos para bloquear el juego.
@@ -65,6 +66,13 @@ Ubicación principal: `Runtime/Scripts/`
 - **`SecureLicenseStorage.cs`**: Gestiona cómo se guardan localmente el JWT de la licencia y los segundos de demo utilizados. 
   - (En su diseño ideal utiliza encripción simétrica AES o el `ProtectedData` en Windows para evitar manipulación de local files).
 - **`ClockGuard.cs`**: Sistema anti-rollback de reloj. Consulta a servidores NTP (como `pool.ntp.org`) por UDP y guarda la fecha más alta detectada. Si el tiempo actual del sistema local es "menor" al guardado, dispara el `LicenseState.ClockTampered`.
+
+---
+
+### 🎨 Branding en Runtime
+- **`BrandingData.cs`**: Modelo de datos serializable para branding (`brand_name`, `logo_url`). Wrapper `BrandingDataArray` para deserializar respuestas de Supabase REST.
+- **`BrandingImageApplier.cs`**: Componente ready-to-use. Se agrega a un `GameObject` con `Image` (UI). Suscribe a `LicenseManager.OnBrandingLogoReady` y reemplaza el source sprite del `Image` con el logo del branding. Configurable: `keepOriginalIfNoBranding`, `useNativeSize`.
+- **`BrandingMeshApplier.cs`**: Componente ready-to-use. Se agrega a un `GameObject` con `MeshRenderer`. Suscribe a `LicenseManager.OnBrandingLogoReady` y cambia la textura del material en la propiedad configurada (`_BaseMap` para URP, `_MainTex` para Built-in). Usa `MaterialPropertyBlock` por defecto para evitar crear instancias de material.
 
 ---
 
