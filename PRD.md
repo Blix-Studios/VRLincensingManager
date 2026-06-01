@@ -73,6 +73,7 @@ Ubicación principal: `Runtime/Scripts/`
 - **`BrandingData.cs`**: Modelo de datos serializable para branding (`brand_name`, `logo_url`). Wrapper `BrandingDataArray` para deserializar respuestas de Supabase REST.
 - **`BrandingImageApplier.cs`**: Componente ready-to-use. Se agrega a un `GameObject` con `Image` (UI). Suscribe a `LicenseManager.OnBrandingLogoReady` y reemplaza el source sprite del `Image` con el logo del branding. Configurable: `keepOriginalIfNoBranding`, `useNativeSize`.
 - **`BrandingMeshApplier.cs`**: Componente ready-to-use. Se agrega a un `GameObject` con `MeshRenderer`. Suscribe a `LicenseManager.OnBrandingLogoReady` y cambia la textura del material en la propiedad configurada (`_BaseMap` para URP, `_MainTex` para Built-in). Usa `MaterialPropertyBlock` por defecto para evitar crear instancias de material.
+- **`BrandingDecalApplier.cs`**: Componente ready-to-use. Se agrega a un `GameObject` con `DecalProjector` (URP). Suscribe a `LicenseManager.OnBrandingLogoReady` y reemplaza la textura Base Map (`_Base_Map`) del material del decal. Usa Reflexión C# para acceder al `DecalProjector` sin crear dependencia dura con el paquete URP.
 
 ---
 
