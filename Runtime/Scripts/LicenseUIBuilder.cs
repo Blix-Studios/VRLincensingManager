@@ -260,7 +260,7 @@ namespace VRLicensing
 
             canvas = canvasGo.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.WorldSpace;
-            canvas.sortingOrder = 30000;
+            canvas.sortingOrder = 100;
 
             var canvasScaler = canvasGo.AddComponent<CanvasScaler>();
             canvasScaler.dynamicPixelsPerUnit = 10f;
@@ -914,7 +914,7 @@ namespace VRLicensing
 
                 // Target Offset — Z = distance in front of camera
                 SetNestedXRI3Field(lazyFollowType, lazyFollowInstance, "m_TargetConfig", "m_TargetOffset", "targetOffset",
-                    new Vector3(0f, -0.1f, CANVAS_DISTANCE), flags);
+                    new Vector3(0f, 0f, CANVAS_DISTANCE), flags);
 
                 // Snap On Enable
                 SetNestedXRI3Field(lazyFollowType, lazyFollowInstance, "m_GeneralFollowParams", "m_SnapOnEnable", "snapOnEnable", true, flags);
@@ -1049,17 +1049,21 @@ namespace VRLicensing
                     }
                 }
 
-                // Initial position
+                // Initial position — use eye-level height (1.5m minimum if camera is at origin)
                 var ct = canvas.transform;
-                ct.position = cam.transform.position + cam.transform.forward * CANVAS_DISTANCE + cam.transform.up * -0.1f;
-                ct.rotation = Quaternion.LookRotation(ct.position - cam.transform.position, Vector3.up);
+                var camPos = cam.transform.position;
+                if (camPos.y < 0.5f) camPos.y = 1.5f; // VR eye-level fallback
+                ct.position = camPos + cam.transform.forward * CANVAS_DISTANCE;
+                ct.rotation = Quaternion.LookRotation(ct.position - camPos, Vector3.up);
             }
             else
             {
-                // Manual positioning fallback
+                // Manual positioning fallback — use eye-level height
                 var ct = canvas.transform;
-                ct.position = cam.transform.position + cam.transform.forward * CANVAS_DISTANCE;
-                ct.rotation = Quaternion.LookRotation(ct.position - cam.transform.position, Vector3.up);
+                var camPos = cam.transform.position;
+                if (camPos.y < 0.5f) camPos.y = 1.5f; // VR eye-level fallback
+                ct.position = camPos + cam.transform.forward * CANVAS_DISTANCE;
+                ct.rotation = Quaternion.LookRotation(ct.position - camPos, Vector3.up);
             }
         }
 
