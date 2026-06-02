@@ -28,7 +28,7 @@ Window > Package Manager > + > Add package from git URL...
 
 Paste:
 ```
-https://github.com/Blix-Studios/VRLincensingManager.git#v1.0.3
+https://github.com/Blix-Studios/VRLincensingManager.git#v1.1.0
 ```
 
 ### Option B — Edit manifest.json
@@ -38,7 +38,7 @@ Add to your project's `Packages/manifest.json`:
 ```json
 {
     "dependencies": {
-        "com.blixstudios.vr-licensing": "https://github.com/Blix-Studios/VRLincensingManager.git#v1.0.3"
+        "com.blixstudios.vr-licensing": "https://github.com/Blix-Studios/VRLincensingManager.git#v1.1.0"
     }
 }
 ```
@@ -176,10 +176,46 @@ Editor/
 
 ## Requirements
 
-- **Unity** 2021.3+ (tested on 2022.3.48f1 and 6000.3.10f1)
-- **Meta XR SDK** (optional, for Oculus User ID)
+- **Unity** 6000.0+ (Unity 6)
 - **Supabase** project with `user_licenses` table
 - **IL2CPP** scripting backend (standard for Quest builds)
+
+### Automatically Installed Dependencies
+
+The following packages are listed as UPM dependencies and will be installed automatically when you add this package:
+
+| Package | Min Version | Purpose |
+|---------|------------|--------|
+| `com.unity.xr.interaction.toolkit` | 3.0.0 | VR interaction, tracked device raycasting, LazyFollow |
+| `com.unity.xr.arfoundation` | 6.0.0 | Passthrough (via ARCameraManager + OpenXR Meta) |
+
+### Required Sample (Manual Import)
+
+After installing, you must import the **Spatial Keyboard** sample from XRI:
+
+1. Open **Window > Package Manager**
+2. Select **XR Interaction Toolkit**
+3. Go to the **Samples** tab
+4. Click **Import** next to **Spatial Keyboard**
+
+> **Note:** UPM packages cannot auto-import samples. If the sample is not imported, the license UI will still function but the VR keyboard will not appear when selecting input fields.
+
+### Scene Setup
+
+For the VR keyboard to work, your scene must include the **XRI Global Keyboard Manager** prefab:
+
+1. Navigate to `Assets/Samples/XR Interaction Toolkit/[version]/Spatial Keyboard/Prefabs/`
+2. Drag the **XRI Global Keyboard Manager** prefab into your scene
+3. This is a singleton that persists across scenes
+
+### Passthrough Setup (Meta Quest)
+
+For the "Scan QR" passthrough feature:
+
+1. Install `com.unity.xr.meta-openxr` (Unity OpenXR: Meta)
+2. In **Project Settings > XR Plug-in Management > OpenXR**, enable the **Meta Quest** feature group
+3. Enable **Meta Quest: Camera (Passthrough)** feature
+4. Ensure your Graphics API is set to **Vulkan**
 
 ## Required Supabase Schema
 

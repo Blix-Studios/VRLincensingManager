@@ -1,6 +1,6 @@
 {
     "name": "com.blixstudios.vr-licensing",
-    "version": "1.0.5",
+    "version": "1.1.0",
     "displayName": "VR Licensing System",
     "description": "Generic licensing and key registration module for VR simulators on Meta Quest. Includes online validation, demo mode, encrypted storage, and anti-tampering protection.",
     "unity": "2021.3",
@@ -17,5 +17,8 @@
         "supabase",
         "security"
     ],
-    "dependencies": {}
+    "dependencies": {
+        "com.unity.xr.interaction.toolkit": "3.0.0",
+        "com.unity.xr.arfoundation": "6.0.0"
+    }
 }

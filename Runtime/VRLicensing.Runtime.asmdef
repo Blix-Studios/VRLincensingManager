@@ -21,6 +21,11 @@
             "name": "com.unity.xr.interaction.toolkit",
             "expression": "3.0.0",
             "define": "HAS_XR_INTERACTION_TOOLKIT"
+        },
+        {
+            "name": "com.unity.xr.arfoundation",
+            "expression": "6.0.0",
+            "define": "HAS_AR_FOUNDATION"
         }
     ],
     "noEngineReferences": false

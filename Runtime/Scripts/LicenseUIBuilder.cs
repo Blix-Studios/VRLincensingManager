@@ -74,6 +74,16 @@ namespace VRLicensing
         private bool isPositioned;
         private Component lazyFollowInstance;
 
+        // ─────────────────── Passthrough State ───────────────────
+        private bool passthroughActive;
+        private CameraClearFlags savedClearFlags;
+        private Color savedBackgroundColor;
+        private bool savedCameraState;
+        private Component arCameraManagerInstance;
+
+        // ─────────────────── XR Keyboard Cache ───────────────────
+        private Type xrKeyboardDisplayType;
+
         // ─────────────────────── Factory ───────────────────────
 
         public static LicenseUIBuilder Create(LicenseConfig licenseConfig, LicenseManager licenseManager)
@@ -688,36 +698,194 @@ namespace VRLicensing
         // ─────────────────── Passthrough ───────────────────
 
         /// <summary>
-        /// Toggles Meta Quest passthrough via reflection (no hard dependency).
+        /// Toggles passthrough via reflection. Supports two strategies:
+        /// 1. AR Foundation (OpenXR) — Uses ARCameraManager (preferred, works with com.unity.xr.meta-openxr)
+        /// 2. OVR SDK (Legacy) — Uses OVRManager + OVRPassthroughLayer (fallback for legacy Meta SDK)
         /// </summary>
         private void TogglePassthrough()
         {
-            // Try OVRManager (Meta XR SDK)
-            var ovrManagerType = Type.GetType("OVRManager, Oculus.VR");
-            if (ovrManagerType != null)
+            passthroughActive = !passthroughActive;
+
+            if (passthroughActive)
+                EnablePassthrough();
+            else
+                DisablePassthrough();
+        }
+
+        private void EnablePassthrough()
+        {
+            var cam = Camera.main;
+            if (cam == null)
             {
-                var instanceProp = ovrManagerType.GetProperty("instance",
-                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
-                if (instanceProp != null)
+                Debug.LogWarning("[VR Licensing] No main camera found for passthrough.");
+                return;
+            }
+
+            // Save original camera state for restoration
+            savedClearFlags = cam.clearFlags;
+            savedBackgroundColor = cam.backgroundColor;
+            savedCameraState = true;
+
+            // Strategy A: AR Foundation (OpenXR path)
+            if (TryEnableARFoundationPassthrough(cam))
+            {
+                ConfigureCameraForPassthrough(cam);
+                Debug.Log("[VR Licensing] Passthrough enabled via AR Foundation (OpenXR).");
+                return;
+            }
+
+            // Strategy B: OVR SDK (Legacy path)
+            if (TryEnableOVRPassthrough())
+            {
+                ConfigureCameraForPassthrough(cam);
+                Debug.Log("[VR Licensing] Passthrough enabled via OVR SDK (Legacy).");
+                return;
+            }
+
+            // No passthrough available
+            passthroughActive = false;
+            Debug.LogWarning("[VR Licensing] Passthrough no disponible. " +
+                "Necesitas AR Foundation (com.unity.xr.arfoundation) con OpenXR Meta, " +
+                "o Meta XR SDK (OVRManager) para activar passthrough.");
+        }
+
+        private void DisablePassthrough()
+        {
+            var cam = Camera.main;
+
+            // Disable ARCameraManager if we added/enabled it
+            if (arCameraManagerInstance != null)
+            {
+                var enabledProp = arCameraManagerInstance.GetType().GetProperty("enabled",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+                if (enabledProp != null)
+                    enabledProp.SetValue(arCameraManagerInstance, false);
+
+                Debug.Log("[VR Licensing] ARCameraManager disabled.");
+            }
+
+            // Disable OVR passthrough if it was enabled
+            TryDisableOVRPassthrough();
+
+            // Restore camera state
+            if (cam != null && savedCameraState)
+            {
+                cam.clearFlags = savedClearFlags;
+                cam.backgroundColor = savedBackgroundColor;
+            }
+
+            Debug.Log("[VR Licensing] Passthrough disabled.");
+        }
+
+        /// <summary>
+        /// Strategy A: Enable passthrough via ARCameraManager (AR Foundation / OpenXR).
+        /// </summary>
+        private bool TryEnableARFoundationPassthrough(Camera cam)
+        {
+            var arCamManagerType = Type.GetType(
+                "UnityEngine.XR.ARFoundation.ARCameraManager, Unity.XR.ARFoundation");
+
+            if (arCamManagerType == null)
+                return false;
+
+            // Check if ARCameraManager already exists on the camera
+            arCameraManagerInstance = cam.GetComponent(arCamManagerType);
+
+            if (arCameraManagerInstance == null)
+            {
+                // Add ARCameraManager to the camera
+                arCameraManagerInstance = cam.gameObject.AddComponent(arCamManagerType);
+                Debug.Log("[VR Licensing] ARCameraManager added to main camera.");
+            }
+            else
+            {
+                // Enable existing ARCameraManager
+                var enabledProp = arCamManagerType.GetProperty("enabled",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+                if (enabledProp != null)
+                    enabledProp.SetValue(arCameraManagerInstance, true);
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Strategy B: Enable passthrough via OVRManager + OVRPassthroughLayer (Legacy Meta SDK).
+        /// </summary>
+        private bool TryEnableOVRPassthrough()
+        {
+            var ovrManagerType = Type.GetType("OVRManager, Oculus.VR");
+            if (ovrManagerType == null)
+                return false;
+
+            var instanceProp = ovrManagerType.GetProperty("instance",
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
+            if (instanceProp == null)
+                return false;
+
+            var instance = instanceProp.GetValue(null);
+            if (instance == null)
+                return false;
+
+            // Enable passthrough on OVRManager
+            var passthroughField = ovrManagerType.GetField("isInsightPassthroughEnabled");
+            if (passthroughField != null)
+                passthroughField.SetValue(instance, true);
+
+            // Find or create OVRPassthroughLayer
+            var ovrPassthroughType = Type.GetType("OVRPassthroughLayer, Oculus.VR");
+            if (ovrPassthroughType != null)
+            {
+                var existingLayer = FindObjectOfType(ovrPassthroughType);
+                if (existingLayer == null)
                 {
-                    var instance = instanceProp.GetValue(null);
-                    if (instance != null)
-                    {
-                        var passthroughField = ovrManagerType.GetField("isInsightPassthroughEnabled");
-                        if (passthroughField != null)
-                        {
-                            bool current = (bool)passthroughField.GetValue(instance);
-                            passthroughField.SetValue(instance, !current);
-                            Debug.Log($"[VR Licensing] Passthrough toggled to: {!current}");
-                            return;
-                        }
-                    }
+                    var ptGo = new GameObject("[VR Licensing] PassthroughLayer");
+                    ptGo.AddComponent(ovrPassthroughType);
+                    Debug.Log("[VR Licensing] OVRPassthroughLayer created.");
+                }
+                else
+                {
+                    // Enable existing layer
+                    var enabledProp2 = ovrPassthroughType.GetProperty("enabled",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+                    if (enabledProp2 != null)
+                        enabledProp2.SetValue(existingLayer, true);
                 }
             }
 
-            // Fallback: log that passthrough is not available
-            Debug.LogWarning("[VR Licensing] Passthrough no disponible. " +
-                "Necesitas Meta XR SDK (OVRManager) para activar passthrough.");
+            return true;
+        }
+
+        /// <summary>
+        /// Disables OVR passthrough if it was previously enabled.
+        /// </summary>
+        private void TryDisableOVRPassthrough()
+        {
+            var ovrManagerType = Type.GetType("OVRManager, Oculus.VR");
+            if (ovrManagerType == null)
+                return;
+
+            var instanceProp = ovrManagerType.GetProperty("instance",
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
+            if (instanceProp == null)
+                return;
+
+            var instance = instanceProp.GetValue(null);
+            if (instance == null)
+                return;
+
+            var passthroughField = ovrManagerType.GetField("isInsightPassthroughEnabled");
+            if (passthroughField != null)
+                passthroughField.SetValue(instance, false);
+        }
+
+        /// <summary>
+        /// Configures camera for passthrough rendering (solid color with alpha 0).
+        /// </summary>
+        private void ConfigureCameraForPassthrough(Camera cam)
+        {
+            cam.clearFlags = CameraClearFlags.SolidColor;
+            cam.backgroundColor = new Color(0f, 0f, 0f, 0f);
         }
 
         // ─────────────────── LazyFollow ───────────────────
@@ -1002,6 +1170,9 @@ namespace VRLicensing
                 if (upper != value) inputField.text = upper;
             });
 
+            // Attach XR Keyboard Display for VR keyboard integration
+            AttachXRKeyboardDisplay(inputField);
+
             return inputField;
         }
 
@@ -1192,6 +1363,74 @@ namespace VRLicensing
             rt.anchorMax = Vector2.one;
             rt.offsetMin = Vector2.zero;
             rt.offsetMax = Vector2.zero;
+        }
+
+        // ─────────────────── XR Keyboard Integration ───────────────────
+
+        /// <summary>
+        /// Attaches an XRKeyboardDisplay component to the input field's GameObject via reflection.
+        /// Requires the XRI Spatial Keyboard sample to be imported in the consuming project.
+        /// Degrades gracefully if the sample is not present.
+        /// </summary>
+        private void AttachXRKeyboardDisplay(TMP_InputField field)
+        {
+            if (field == null) return;
+
+            // Cache the type lookup
+            if (xrKeyboardDisplayType == null)
+            {
+                xrKeyboardDisplayType = Type.GetType(
+                    "UnityEngine.XR.Interaction.Toolkit.Samples.SpatialKeyboard.XRKeyboardDisplay, " +
+                    "Unity.XR.Interaction.Toolkit.Samples.SpatialKeyboard");
+
+                if (xrKeyboardDisplayType == null)
+                {
+                    Debug.LogWarning("[VR Licensing] XRKeyboardDisplay not found. " +
+                        "Import the 'Spatial Keyboard' sample from XR Interaction Toolkit " +
+                        "in Package Manager to enable VR keyboard support.");
+                    return;
+                }
+
+                Debug.Log("[VR Licensing] XRKeyboardDisplay type resolved successfully.");
+            }
+
+            // If type was previously not found, skip
+            if (xrKeyboardDisplayType == null)
+                return;
+
+            var go = field.gameObject;
+            var flags = System.Reflection.BindingFlags.Instance |
+                        System.Reflection.BindingFlags.NonPublic |
+                        System.Reflection.BindingFlags.Public;
+
+            // Add the component
+            var display = go.AddComponent(xrKeyboardDisplayType);
+
+            // Set inputField via the public property (its setter configures
+            // resetOnDeActivation=false and shouldHideSoftKeyboard=true)
+            var inputFieldProp = xrKeyboardDisplayType.GetProperty("inputField", flags);
+            if (inputFieldProp != null && inputFieldProp.CanWrite)
+                inputFieldProp.SetValue(display, field);
+
+            // useSceneKeyboard = false → use GlobalNonNativeKeyboard
+            var useSceneKbField = xrKeyboardDisplayType.GetField("m_UseSceneKeyboard", flags);
+            if (useSceneKbField != null)
+                useSceneKbField.SetValue(display, false);
+
+            // updateOnKeyPress = true
+            var updateField = xrKeyboardDisplayType.GetField("m_UpdateOnKeyPress", flags);
+            if (updateField != null)
+                updateField.SetValue(display, true);
+
+            // monitorInputFieldCharacterLimit = true (respect characterLimit=4)
+            var monitorField = xrKeyboardDisplayType.GetField("m_MonitorInputFieldCharacterLimit", flags);
+            if (monitorField != null)
+                monitorField.SetValue(display, true);
+
+            // hideKeyboardOnDisable = false (avoid closing keyboard when navigating between fields)
+            var hideField = xrKeyboardDisplayType.GetField("m_HideKeyboardOnDisable", flags);
+            if (hideField != null)
+                hideField.SetValue(display, false);
         }
 
         private IEnumerator ShowSuccessAndHide()

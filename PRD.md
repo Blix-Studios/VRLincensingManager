@@ -79,12 +79,30 @@ Ubicación principal: `Runtime/Scripts/`
 
 ## 4. Dependencias y Reflexión
 
-Para mantener el SDK agnóstico y evitar errores de compilación, el `asmdef` (`VRLicensing.Runtime.asmdef`) **no depende forzosamente de XR Interaction Toolkit o Oculus SDK**. Accede a ellos vía **Reflexión C# (`Type.GetType`)**:
+Para mantener el SDK agnóstico y evitar errores de compilación, el `asmdef` (`VRLicensing.Runtime.asmdef`) **no depende forzosamente de los assemblies de XR Interaction Toolkit o Meta SDK a nivel de compilación**. Accede a ellos vía **Reflexión C# (`Type.GetType`)**.
+
+### Dependencias UPM (`package.json`)
+El paquete declara las siguientes dependencias que se instalan automáticamente al agregar el UPM:
+- **`com.unity.xr.interaction.toolkit` ≥ 3.0.0**: XR Interaction Toolkit (raycasting, LazyFollow, etc.)
+- **`com.unity.xr.arfoundation` ≥ 6.0.0**: AR Foundation para passthrough vía OpenXR Meta.
+
+### Sample Requerido (Importación Manual)
+- **Spatial Keyboard** (sample de XRI): Provee el `XRKeyboardDisplay`, `GlobalNonNativeKeyboard`, `XRKeyboard`, y los prefabs del teclado virtual. Los UPM packages no pueden forzar la instalación de samples; se documenta en el README como requisito manual.
+
+### Reflexión en Runtime
 - **XR Interaction Toolkit (XRI)**:
   - Extrae `TrackedDeviceGraphicRaycaster` para interactuar con rayos láser.
   - Extrae `LazyFollow` rellenando sus campos anidados (`m_TargetConfig`, `m_PositionFollowParams`) para suavizado de cámara.
-- **Meta XR SDK**:
-  - Extrae `OVRManager` para poder habilitar el Passthrough (`isInsightPassthroughEnabled = true`), permitiendo escanear QR's levantándote las gafas.
+  - Extrae `XRKeyboardDisplay` (del assembly `Unity.XR.Interaction.Toolkit.Samples.SpatialKeyboard`) para conectar los `TMP_InputField` de la UI con el teclado virtual global. Si el sample no está importado, el sistema degrada gracefully sin teclado.
+- **AR Foundation (Passthrough — Estrategia primaria)**:
+  - Extrae `ARCameraManager` para habilitar/deshabilitar passthrough en Meta Quest via OpenXR (`com.unity.xr.meta-openxr`). Configura la cámara con `clearFlags = SolidColor` y `backgroundColor.a = 0` para que el passthrough sea visible.
+- **Meta XR SDK — OVR (Passthrough — Estrategia de fallback)**:
+  - Si AR Foundation no está disponible, intenta `OVRManager` para habilitar `isInsightPassthroughEnabled` y busca/crea un `OVRPassthroughLayer`. Este es el camino legacy para proyectos que aún usan el OVR SDK.
+
+### Define Constraints (`versionDefines` en el asmdef)
+- `HAS_XR_INTERACTION_TOOLKIT`: Definido cuando XRI ≥ 3.0.0 está presente.
+- `HAS_AR_FOUNDATION`: Definido cuando AR Foundation ≥ 6.0.0 está presente.
+- `USE_OCULUS_SDK`: Definido cuando el Meta XR SDK Core está presente.
 
 ---
 
