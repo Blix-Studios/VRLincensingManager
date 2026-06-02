@@ -41,7 +41,7 @@ namespace VRLicensing
             string endpoint = $"{supabaseUrl}/rest/v1/user_licenses";
             string query = $"?license_key=eq.{Uri.EscapeDataString(licenseKey)}" +
                            $"&status=eq.active" +
-                           $"&select=id,license_key,license_type,status,product_id,starts_at,expires_at";
+                           $"&select=id,license_key,license_type,status,product_id,starts_at,expires_at,device_unique_id";
 
             // Optionally filter by product_id
             if (productId > 0)
@@ -103,6 +103,50 @@ namespace VRLicensing
                     string errorMsg = $"Error processing response: {e.Message}";
                     Debug.LogError($"[VR Licensing] {errorMsg}");
                     onError?.Invoke(errorMsg);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Binds a license to a specific device by PATCHing the device_unique_id column.
+        /// Only binds if the column is currently null (first activation).
+        /// </summary>
+        /// <param name="licenseId">The license UUID to bind.</param>
+        /// <param name="deviceUniqueId">The device's SystemInfo.deviceUniqueIdentifier.</param>
+        /// <param name="onSuccess">Called when binding succeeds.</param>
+        /// <param name="onError">Called with error message on failure.</param>
+        public IEnumerator BindLicenseToDevice(string licenseId, string deviceUniqueId,
+            Action onSuccess, Action<string> onError)
+        {
+            string url = $"{supabaseUrl}/rest/v1/user_licenses?id=eq.{Uri.EscapeDataString(licenseId)}";
+
+            string jsonBody = $"{{\"device_unique_id\":\"{deviceUniqueId}\"}}";
+
+            using (var request = new UnityWebRequest(url, "PATCH"))
+            {
+                byte[] bodyRaw = Encoding.UTF8.GetBytes(jsonBody);
+                request.uploadHandler = new UploadHandlerRaw(bodyRaw);
+                request.downloadHandler = new DownloadHandlerBuffer();
+                request.SetRequestHeader("apikey", anonKey);
+                request.SetRequestHeader("Authorization", $"Bearer {anonKey}");
+                request.SetRequestHeader("Content-Type", "application/json");
+                request.SetRequestHeader("Prefer", "return=minimal");
+                request.timeout = 10;
+
+                Debug.Log($"[VR Licensing] Binding license {licenseId} to device {deviceUniqueId}...");
+
+                yield return request.SendWebRequest();
+
+                if (request.result != UnityWebRequest.Result.Success)
+                {
+                    string errorMsg = $"Failed to bind license to device: {request.error}";
+                    Debug.LogError($"[VR Licensing] {errorMsg}");
+                    onError?.Invoke(errorMsg);
+                }
+                else
+                {
+                    Debug.Log($"[VR Licensing] License successfully bound to device {deviceUniqueId}.");
+                    onSuccess?.Invoke();
                 }
             }
         }

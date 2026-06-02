@@ -16,6 +16,7 @@ namespace VRLicensing
         public int product_id;
         public string starts_at;
         public string expires_at;
+        public string device_unique_id; // Device binding — null means unbound
 
         /// <summary>
         /// Returns the parsed expiration date.

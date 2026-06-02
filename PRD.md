@@ -67,6 +67,18 @@ Ubicación principal: `Runtime/Scripts/`
   - (En su diseño ideal utiliza encripción simétrica AES o el `ProtectedData` en Windows para evitar manipulación de local files).
 - **`ClockGuard.cs`**: Sistema anti-rollback de reloj. Consulta a servidores NTP (como `pool.ntp.org`) por UDP y guarda la fecha más alta detectada. Si el tiempo actual del sistema local es "menor" al guardado, dispara el `LicenseState.ClockTampered`.
 
+### 🔗 Device Binding (Vinculación de Licencia a Dispositivo)
+- **Columna `device_unique_id`** en `user_licenses`: Se usa para vincular una licencia a un único headset.
+  - `null` = licencia no activada aún (disponible para cualquier dispositivo).
+  - Valor asignado = `SystemInfo.deviceUniqueIdentifier` del headset que activó la licencia.
+- **Flujo de primera activación**: Al validar una key, si `device_unique_id` es `null`, el UPM hace PATCH a Supabase para vincular la licencia a este dispositivo.
+- **Flujo de re-uso**: Si otro headset intenta usar la misma key, el UPM detecta que `device_unique_id` no coincide y **rechaza** la activación con el mensaje: "This license is already registered on another device."
+- **Mismo dispositivo**: Si el dispositivo que activó la licencia la ingresa nuevamente, se acepta normalmente.
+- **Migración SQL requerida**:
+  ```sql
+  ALTER TABLE user_licenses ADD COLUMN device_unique_id text;
+  ```
+
 ---
 
 ### 🎨 Branding en Runtime

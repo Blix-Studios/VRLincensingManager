@@ -348,19 +348,67 @@ namespace VRLicensing
                 }
             );
 
-            if (validLicense != null)
-            {
-                // License valid — activate it
-                SecureLicenseStorage.SaveLicenseData(validLicense);
-                demoManager.StopDemo();
-                ActivateLicense(validLicense);
-                onResult?.Invoke(true, null);
-            }
-            else
+            if (validLicense == null)
             {
                 OnValidationError?.Invoke(errorMessage ?? "Unknown error");
                 onResult?.Invoke(false, errorMessage ?? "Error validating the license.");
+                yield break;
             }
+
+            // ── Device Binding Check ──
+            string currentDeviceId = SystemInfo.deviceUniqueIdentifier;
+
+            if (!string.IsNullOrEmpty(validLicense.device_unique_id))
+            {
+                // License is already bound to a device
+                if (validLicense.device_unique_id != currentDeviceId)
+                {
+                    // Bound to a DIFFERENT device — reject
+                    string rejectMsg = "This license is already registered on another device. " +
+                        "Each license can only be used on one headset.";
+                    Debug.LogWarning($"[VR Licensing] Device binding mismatch. " +
+                        $"License bound to: {validLicense.device_unique_id}, " +
+                        $"Current device: {currentDeviceId}");
+                    OnValidationError?.Invoke(rejectMsg);
+                    onResult?.Invoke(false, rejectMsg);
+                    yield break;
+                }
+
+                // Bound to THIS device — proceed normally
+                Debug.Log("[VR Licensing] License already bound to this device. Proceeding.");
+            }
+            else
+            {
+                // License not yet bound — first activation, bind it now
+                Debug.Log($"[VR Licensing] First activation — binding license to device {currentDeviceId}...");
+
+                bool bindSuccess = false;
+                string bindError = null;
+
+                yield return supabaseClient.BindLicenseToDevice(
+                    validLicense.id,
+                    currentDeviceId,
+                    () => { bindSuccess = true; },
+                    (error) => { bindError = error; }
+                );
+
+                if (!bindSuccess)
+                {
+                    string failMsg = $"License validated but device binding failed: {bindError}";
+                    Debug.LogError($"[VR Licensing] {failMsg}");
+                    // Still activate locally — the binding can be retried next session
+                    Debug.LogWarning("[VR Licensing] Proceeding with activation despite binding failure.");
+                }
+
+                // Update the local license data with the device ID
+                validLicense.device_unique_id = currentDeviceId;
+            }
+
+            // License valid and device check passed — activate
+            SecureLicenseStorage.SaveLicenseData(validLicense);
+            demoManager.StopDemo();
+            ActivateLicense(validLicense);
+            onResult?.Invoke(true, null);
         }
 
         /// <summary>
