@@ -47,21 +47,21 @@ namespace VRLicensing
 
         // Key Input Panel
         private GameObject keyInputPanel;
-        private TMP_InputField[] keyFields;
+        private TMP_InputField keyField;
         private Button activateButton;
         private TextMeshProUGUI activateButtonText;
         private TextMeshProUGUI statusText;
 
         // Demo Expired Panel
         private GameObject demoExpiredPanel;
-        private TMP_InputField[] expiredKeyFields;
+        private TMP_InputField expiredKeyField;
         private Button expiredActivateButton;
         private TextMeshProUGUI expiredActivateButtonText;
         private TextMeshProUGUI expiredStatusText;
 
         // License Expired Panel
         private GameObject licenseExpiredPanel;
-        private TMP_InputField[] licExpiredKeyFields;
+        private TMP_InputField licExpiredKeyField;
         private Button licExpiredActivateButton;
         private TextMeshProUGUI licExpiredActivateButtonText;
         private TextMeshProUGUI licExpiredStatusText;
@@ -164,7 +164,7 @@ namespace VRLicensing
             licenseExpiredPanel.SetActive(false);
             successPanel.SetActive(false);
             statusText.text = "";
-            ClearKeyFields(keyFields);
+            ClearKeyField(keyField);
         }
 
         /// <summary>Shows the Demo Expired panel (only license key option).</summary>
@@ -178,7 +178,7 @@ namespace VRLicensing
             licenseExpiredPanel.SetActive(false);
             successPanel.SetActive(false);
             expiredStatusText.text = "";
-            ClearKeyFields(expiredKeyFields);
+            ClearKeyField(expiredKeyField);
         }
 
         /// <summary>Shows the License Expired panel (renewal option).</summary>
@@ -192,7 +192,7 @@ namespace VRLicensing
             licenseExpiredPanel.SetActive(true);
             successPanel.SetActive(false);
             licExpiredStatusText.text = "";
-            ClearKeyFields(licExpiredKeyFields);
+            ClearKeyField(licExpiredKeyField);
         }
 
         /// <summary>Hides all UI (license valid or demo running).</summary>
@@ -454,7 +454,7 @@ namespace VRLicensing
                 size: new Vector2(550, 25), pos: new Vector2(0, -72));
 
             // Key fields
-            keyFields = BuildKeyFieldRow("KeyFields", panelRt, new Vector2(0, 15));
+            keyField = BuildKeyField("KeyField", panelRt, new Vector2(0, 15));
 
             // Activate button
             activateButton = CreatePositionedButton("ActivateBtn", panelRt,
@@ -512,7 +512,7 @@ namespace VRLicensing
                 size: new Vector2(550, 45), pos: new Vector2(0, -72));
 
             // Key fields
-            expiredKeyFields = BuildKeyFieldRow("ExpKeyFields", panelRt, new Vector2(0, 10));
+            expiredKeyField = BuildKeyField("ExpKeyField", panelRt, new Vector2(0, 10));
 
             // Activate button
             expiredActivateButton = CreatePositionedButton("ExpActivateBtn", panelRt,
@@ -570,7 +570,7 @@ namespace VRLicensing
                 size: new Vector2(550, 45), pos: new Vector2(0, -72));
 
             // Key fields
-            licExpiredKeyFields = BuildKeyFieldRow("LicExpKeyFields", panelRt, new Vector2(0, 10));
+            licExpiredKeyField = BuildKeyField("LicExpKeyField", panelRt, new Vector2(0, 10));
 
             // Activate button
             licExpiredActivateButton = CreatePositionedButton("LicExpActivateBtn", panelRt,
@@ -726,9 +726,9 @@ namespace VRLicensing
             SetScanStatus("QR detected — validating...", COLOR_SUCCESS);
 
             // Mirror the key into the visible fields (if a key-entry panel is open) for feedback.
-            if (keyInputPanel.activeSelf) FillKeyFields(keyFields, key);
-            else if (demoExpiredPanel.activeSelf) FillKeyFields(expiredKeyFields, key);
-            else if (licenseExpiredPanel.activeSelf) FillKeyFields(licExpiredKeyFields, key);
+            if (keyInputPanel.activeSelf) FillKeyField(keyField, key);
+            else if (demoExpiredPanel.activeSelf) FillKeyField(expiredKeyField, key);
+            else if (licenseExpiredPanel.activeSelf) FillKeyField(licExpiredKeyField, key);
 
             SubmitKey(key);
         }
@@ -739,13 +739,10 @@ namespace VRLicensing
                 if (b != null) b.SetActive(false);
         }
 
-        private void FillKeyFields(TMP_InputField[] fields, string key)
+        private void FillKeyField(TMP_InputField field, string key)
         {
-            if (fields == null || string.IsNullOrEmpty(key)) return;
-            var groups = key.Split('-');
-            for (int i = 0; i < fields.Length; i++)
-                if (fields[i] != null)
-                    fields[i].text = i < groups.Length ? groups[i] : "";
+            if (field != null && !string.IsNullOrEmpty(key))
+                field.text = NormalizeKey(key);
         }
 
         private void SetScanStatus(string msg, Color color)
@@ -763,19 +760,19 @@ namespace VRLicensing
 
         private void OnActivateClicked()
         {
-            string key = GetKeyFromFields(keyFields);
+            string key = GetKey(keyField);
             SubmitKey(key);
         }
 
         private void OnExpiredActivateClicked()
         {
-            string key = GetKeyFromFields(expiredKeyFields);
+            string key = GetKey(expiredKeyField);
             SubmitKey(key);
         }
 
         private void OnLicExpiredActivateClicked()
         {
-            string key = GetKeyFromFields(licExpiredKeyFields);
+            string key = GetKey(licExpiredKeyField);
             SubmitKey(key);
         }
 
@@ -1181,46 +1178,24 @@ namespace VRLicensing
 
         // ─────────────────── Key Field Builders ───────────────────
 
-        private TMP_InputField[] BuildKeyFieldRow(string name, RectTransform parent, Vector2 position)
+        // A single input field for the whole key (XXXX-XXXX-XXXX-XXXX). One field paired
+        // with one VR keyboard makes typing/backspace/editing work naturally — the 4-field
+        // layout fought the shared global keyboard (desync, stuck backspace, carry-over).
+        private TMP_InputField BuildKeyField(string name, RectTransform parent, Vector2 position)
         {
-            var container = CreatePanel(name, parent, Color.clear);
-            var contRt = container.GetComponent<RectTransform>();
-            contRt.anchorMin = new Vector2(0.5f, 0.5f);
-            contRt.anchorMax = new Vector2(0.5f, 0.5f);
-            contRt.sizeDelta = new Vector2(500, 50);
-            contRt.anchoredPosition = position;
+            var field = CreateKeyInputField(name, parent, 520f,
+                charLimit: 19, placeholderText: "XXXX-XXXX-XXXX-XXXX", allowDashes: true);
 
-            var hlg = container.AddComponent<HorizontalLayoutGroup>();
-            hlg.spacing = 4;
-            hlg.childAlignment = TextAnchor.MiddleCenter;
-            hlg.childForceExpandWidth = false;
-            hlg.childForceExpandHeight = true;
-            hlg.childControlWidth = true;
-            hlg.childControlHeight = true;
-
-            var fields = new TMP_InputField[4];
-
-            for (int i = 0; i < 4; i++)
-            {
-                fields[i] = CreateKeyInputField($"{name}_F{i}", contRt, 100);
-
-                if (i < 3)
-                {
-                    var sep = CreateTMPText($"{name}_S{i}", contRt,
-                        "-", 10, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center);
-                    var sepLe = sep.gameObject.AddComponent<LayoutElement>();
-                    sepLe.preferredWidth = 12;
-                    sepLe.flexibleWidth = 0;
-                }
-            }
-
-            // Auto-advance intentionally removed: the shared VR keyboard carried text
-            // between fields (magically filling/skipping them). Users move between the
-            // 4 groups manually by tapping each field.
-            return fields;
+            var rt = field.GetComponent<RectTransform>();
+            rt.anchorMin = new Vector2(0.5f, 0.5f);
+            rt.anchorMax = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta = new Vector2(520, 50);
+            rt.anchoredPosition = position;
+            return field;
         }
 
-        private TMP_InputField CreateKeyInputField(string name, RectTransform parent, float width)
+        private TMP_InputField CreateKeyInputField(string name, RectTransform parent, float width,
+            int charLimit = 4, string placeholderText = "XXXX", bool allowDashes = false)
         {
             var go = new GameObject(name);
             go.transform.SetParent(parent, false);
@@ -1253,7 +1228,7 @@ namespace VRLicensing
             var phGo = new GameObject("Placeholder");
             phGo.transform.SetParent(textArea.transform, false);
             var ph = phGo.AddComponent<TextMeshProUGUI>();
-            ph.text = "XXXX";
+            ph.text = placeholderText;
             ph.fontSize = 20;
             ph.color = new Color(0.35f, 0.35f, 0.42f, 0.5f);
             ph.alignment = TextAlignmentOptions.Center;
@@ -1275,12 +1250,22 @@ namespace VRLicensing
             inputField.textViewport = textAreaRt;
             inputField.textComponent = it;
             inputField.placeholder = ph;
-            inputField.characterLimit = 4;
-            inputField.contentType = TMP_InputField.ContentType.Alphanumeric;
-            inputField.characterValidation = TMP_InputField.CharacterValidation.Alphanumeric;
+            inputField.characterLimit = charLimit;
+            if (allowDashes)
+            {
+                // Single full-key field: allow the dash separators, free caret editing.
+                inputField.contentType = TMP_InputField.ContentType.Standard;
+                inputField.characterValidation = TMP_InputField.CharacterValidation.None;
+                inputField.onFocusSelectAll = false;
+            }
+            else
+            {
+                inputField.contentType = TMP_InputField.ContentType.Alphanumeric;
+                inputField.characterValidation = TMP_InputField.CharacterValidation.Alphanumeric;
+                inputField.onFocusSelectAll = true;
+            }
             inputField.caretColor = COLOR_ACCENT;
             inputField.selectionColor = new Color(COLOR_ACCENT.r, COLOR_ACCENT.g, COLOR_ACCENT.b, 0.3f);
-            inputField.onFocusSelectAll = true;
 
             inputField.onValueChanged.AddListener((value) =>
             {
@@ -1296,22 +1281,35 @@ namespace VRLicensing
 
         // ─────────────────── Utility Builders ───────────────────
 
-        private string GetKeyFromFields(TMP_InputField[] fields)
+        private string GetKey(TMP_InputField field)
         {
+            return field == null ? "" : NormalizeKey(field.text);
+        }
+
+        /// <summary>
+        /// Turns free-form input ("sboxtestchn10001", "SBOX-TEST-CHN1-0001", spaced, etc.)
+        /// into the canonical uppercase XXXX-XXXX-XXXX-XXXX form.
+        /// </summary>
+        private static string NormalizeKey(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return "";
+
+            string alnum = "";
+            foreach (char c in raw.ToUpperInvariant())
+                if (char.IsLetterOrDigit(c)) alnum += c;
+
             string result = "";
-            for (int i = 0; i < fields.Length; i++)
+            for (int i = 0; i < alnum.Length; i++)
             {
-                if (i > 0) result += "-";
-                result += fields[i].text.Trim().ToUpperInvariant();
+                if (i > 0 && i % 4 == 0) result += "-";
+                result += alnum[i];
             }
             return result;
         }
 
-        private void ClearKeyFields(TMP_InputField[] fields)
+        private void ClearKeyField(TMP_InputField field)
         {
-            if (fields == null) return;
-            foreach (var f in fields)
-                if (f != null) f.text = "";
+            if (field != null) field.text = "";
         }
 
         private GameObject CreatePanel(string name, RectTransform parent, Color color,
@@ -1536,14 +1534,6 @@ namespace VRLicensing
             if (hideField != null)
                 hideField.SetValue(display, false);
 
-            // clearTextOnOpen = true — critical for the 4-field key layout with a shared
-            // global keyboard. On auto-advance, focusing the next field opens the keyboard
-            // with that field's text; forcing it empty first makes keyboard.Open(field.text)
-            // reset the shared buffer to "" instead of carrying the previous field's text
-            // (e.g. typing "SBOX" in field 1 was cascading into every field).
-            var clearOnOpenField = xrKeyboardDisplayType.GetField("m_ClearTextOnOpen", flags);
-            if (clearOnOpenField != null)
-                clearOnOpenField.SetValue(display, true);
         }
 
         private IEnumerator ShowSuccessAndHide(string title, string subtitle, float holdSeconds)
