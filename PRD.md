@@ -45,6 +45,12 @@ Ubicación principal: `Runtime/Scripts/`
 - **`LicenseBootstrapper.cs`**: Script automático (`[RuntimeInitializeOnLoadMethod(BeforeSceneLoad)]`). Carga la configuración (`LicenseConfig`) y levanta el `LicenseManager` y la UI apenas el proyecto arranca.
 - **`LicenseConfig.cs`**: `ScriptableObject` donde el desarrollador introduce su `Supabase URL`, `PlayFab ID`/`Product ID`, tiempo de demo y nombre de la App.
 
+### 🛠️ Editor Tooling
+- **`LicensingSetupWindow.cs`** (`Editor/`): Ventana de editor accesible desde **Tools > Blix Studios > Licensing Setup**. Permite la configuración inicial del sistema de licencias sin tocar el Inspector directamente:
+  - **Generación automática**: Botón para crear el `LicenseConfig` ScriptableObject dentro de `Assets/Resources/` con valores por defecto.
+  - **Edición inline**: Campos editables para `Product ID` y `App Display Name`, así como configuraciones avanzadas (duración de demo, horas offline, clave RSA pública).
+  - **Panel de estado**: Resumen visual que indica si la configuración mínima requerida está completa.
+
 ### 🎨 Interfaz de Usuario (UI)
 - **`LicenseUIBuilder.cs`**: Script gigantesco (Factory) responsable de generar los paneles de UI desde cero utilizando código. 
   - Genera un `Canvas WorldSpace` inmersivo.

@@ -68,6 +68,14 @@ namespace VRLicensing
 
         // Success Panel
         private GameObject successPanel;
+        private TextMeshProUGUI successTitleText;
+        private TextMeshProUGUI successSubtitleText;
+        private bool successAnimating;
+
+        // Demo timer HUD (stays visible while the demo is running)
+        private GameObject demoTimerPanel;
+        private TextMeshProUGUI demoTimerText;
+        private DemoModeManager demoManagerRef;
 
         private LicenseConfig config;
         private LicenseManager manager;
@@ -171,10 +179,26 @@ namespace VRLicensing
             overlayPanel.SetActive(false);
         }
 
-        /// <summary>Shows success feedback then hides everything.</summary>
-        public void ShowLicensed()
+        /// <summary>
+        /// Shows the "license active" confirmation, then hides everything.
+        /// </summary>
+        /// <param name="alreadyActive">
+        /// true when the license was already stored on this device (cached) — shows an
+        /// "all good" notice and auto-closes after 8s. false for a fresh key redemption.
+        /// </param>
+        public void ShowLicensed(bool alreadyActive = false)
         {
-            StartCoroutine(ShowSuccessAndHide());
+            HideDemoTimer();
+            EnsurePositioned();
+            if (successAnimating) return;
+
+            string title = alreadyActive ? "License active" : "¡Key redeemed successfully!";
+            string subtitle = alreadyActive
+                ? "This device already has a valid license.\nEverything's good — enjoy the simulator."
+                : "Your license has been activated successfully.\nThe simulator will unlock automatically.";
+            float hold = alreadyActive ? 8f : 2.5f;
+
+            StartCoroutine(ShowSuccessAndHide(title, subtitle, hold));
         }
 
         /// <summary>Shows an error message on the active panel.</summary>
@@ -248,6 +272,7 @@ namespace VRLicensing
             BuildDemoExpiredPanel();
             BuildLicenseExpiredPanel();
             BuildSuccessPanel();
+            BuildDemoTimer();
 
             // Start hidden
             overlayPanel.SetActive(false);
@@ -598,14 +623,14 @@ namespace VRLicensing
                 stretch: true, padding: new Vector4(10, 10, 10, 10));
 
             // ── Title text ──
-            CreateTMPText("SuccessTitle", successContentRt,
+            successTitleText = CreateTMPText("SuccessTitle", successContentRt,
                 "\u00a1Key redeemed successfully!",
                 26, FontStyles.Bold, COLOR_SUCCESS, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
                 size: new Vector2(480, 40), pos: new Vector2(0, -135));
 
             // ── Subtitle text ──
-            CreateTMPText("SuccessSubtitle", successContentRt,
+            successSubtitleText = CreateTMPText("SuccessSubtitle", successContentRt,
                 "Your license has been activated successfully.\nThe simulator will unlock automatically.",
                 14, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
@@ -1437,12 +1462,21 @@ namespace VRLicensing
                 hideField.SetValue(display, false);
         }
 
-        private IEnumerator ShowSuccessAndHide()
+        private IEnumerator ShowSuccessAndHide(string title, string subtitle, float holdSeconds)
         {
+            successAnimating = true;
+
+            // The success panel lives inside the overlay — make sure it's visible
+            // (in the cached-license path the overlay was never shown).
+            overlayPanel.SetActive(true);
             welcomePanel.SetActive(false);
             keyInputPanel.SetActive(false);
             demoExpiredPanel.SetActive(false);
+            licenseExpiredPanel.SetActive(false);
             successPanel.SetActive(true);
+
+            if (successTitleText != null) successTitleText.text = title;
+            if (successSubtitleText != null) successSubtitleText.text = subtitle;
 
             // Reset animation state
             successCanvasGroup.alpha = 0f;
@@ -1466,8 +1500,8 @@ namespace VRLicensing
             successCanvasGroup.alpha = 1f;
             successContentRt.localScale = Vector3.one;
 
-            // ── Hold visible for 2.5 seconds ──
-            yield return new WaitForSeconds(2.5f);
+            // ── Hold visible ──
+            yield return new WaitForSeconds(holdSeconds);
 
             // ── Animate OUT: fade out (0.4s) ──
             float fadeOutDuration = 0.4f;
@@ -1482,6 +1516,77 @@ namespace VRLicensing
 
             successPanel.SetActive(false);
             overlayPanel.SetActive(false);
+            successAnimating = false;
+        }
+
+        // ─────────────────── DEMO TIMER HUD ───────────────────
+
+        /// <summary>
+        /// Builds a compact countdown bar shown while the demo runs. It lives directly
+        /// under the canvas (a sibling of the overlay) so it stays visible even when the
+        /// modal overlay is hidden during gameplay.
+        /// </summary>
+        private void BuildDemoTimer()
+        {
+            var canvasRt = canvas.GetComponent<RectTransform>();
+
+            demoTimerPanel = CreatePanel("DemoTimerHUD", canvasRt, new Color(0.06f, 0.07f, 0.10f, 0.82f));
+            var rt = demoTimerPanel.GetComponent<RectTransform>();
+            rt.anchorMin = new Vector2(0.5f, 1f);
+            rt.anchorMax = new Vector2(0.5f, 1f);
+            rt.pivot = new Vector2(0.5f, 1f);
+            rt.sizeDelta = new Vector2(340, 54);
+            rt.anchoredPosition = new Vector2(0, -14);
+
+            // Accent underline
+            var bar = CreatePanel("DemoTimerBar", rt, COLOR_GREEN);
+            var barRt = bar.GetComponent<RectTransform>();
+            barRt.anchorMin = new Vector2(0f, 0f);
+            barRt.anchorMax = new Vector2(1f, 0f);
+            barRt.pivot = new Vector2(0.5f, 0f);
+            barRt.sizeDelta = new Vector2(0, 4);
+            barRt.anchoredPosition = Vector2.zero;
+
+            demoTimerText = CreateTMPText("DemoTimerText", rt,
+                "Demo", 18, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
+                stretch: true, padding: new Vector4(12, 12, 8, 12));
+
+            demoTimerPanel.SetActive(false);
+        }
+
+        /// <summary>Shows the demo countdown HUD (called when the demo starts).</summary>
+        public void ShowDemoTimer()
+        {
+            EnsurePositioned();
+            if (demoTimerPanel != null) demoTimerPanel.SetActive(true);
+        }
+
+        /// <summary>Hides the demo countdown HUD.</summary>
+        public void HideDemoTimer()
+        {
+            if (demoTimerPanel != null) demoTimerPanel.SetActive(false);
+        }
+
+        private void Update()
+        {
+            if (demoTimerPanel == null || !demoTimerPanel.activeSelf) return;
+
+            if (demoManagerRef == null && manager != null)
+                demoManagerRef = manager.GetComponent<DemoModeManager>();
+            if (demoManagerRef == null || demoTimerText == null) return;
+
+            float remaining = Mathf.Max(0f, demoManagerRef.RemainingDemoSeconds);
+            demoTimerText.text = "Demo  ·  " + FormatTime(remaining) + " left";
+            demoTimerText.color = remaining <= 60f ? COLOR_ERROR : COLOR_TEXT;
+        }
+
+        private static string FormatTime(float seconds)
+        {
+            int total = Mathf.CeilToInt(seconds);
+            int h = total / 3600;
+            int m = (total % 3600) / 60;
+            int s = total % 60;
+            return h > 0 ? $"{h}:{m:00}:{s:00}" : $"{m:00}:{s:00}";
         }
     }
 }

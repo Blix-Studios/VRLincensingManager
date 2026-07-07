@@ -41,7 +41,8 @@ namespace VRLicensing
         private Texture2D cachedBrandingLogo;
         private Sprite cachedBrandingSprite;
         private LicenseUIBuilder uiBuilder;
-        private DeviceRegistryData serverDeviceRecord;
+        private float serverReportedDemo; // demo seconds the server already knows about (for additive delta)
+        private bool activatingFromCache; // true = re-activating a stored license at startup (vs fresh redemption)
         private int sessionCount;
         private float fpsAccumulator;
         private int fpsFrameCount;
@@ -179,6 +180,11 @@ namespace VRLicensing
         {
             Debug.Log("[VR Licensing] Starting licensing flow...");
 
+            // Assume the server already knows the local demo total; GetDeviceStatus (demo
+            // path only) refines this to the real server value so the reported delta is
+            // correct. In licensed paths this keeps the startup report a no-op touch.
+            serverReportedDemo = SecureLicenseStorage.GetDemoUsedSeconds();
+
             // Step 0: Integrity check (detect data wipe / tampering)
             if (!SecureLicenseStorage.IsFirstRun())
             {
@@ -232,6 +238,7 @@ namespace VRLicensing
             if (cachedLicense != null && cachedLicense.IsValid)
             {
                 Debug.Log($"[VR Licensing] Cached license valid. Expires: {cachedLicense.expires_at}");
+                activatingFromCache = true; // already-licensed device — show the "all good" notice
                 ActivateLicense(cachedLicense);
                 yield break;
             }
@@ -251,35 +258,32 @@ namespace VRLicensing
             }
 
             // Step 3: Server-side device check (anti-factory-reset protection)
-            bool serverCheckDone = false;
             bool serverDemoBlocked = false;
             float serverDemoUsed = 0f;
 
-            yield return supabaseClient.CheckDeviceDemo(
+            yield return supabaseClient.GetDeviceStatus(
                 config.productId,
-                (record) => {
-                    serverCheckDone = true;
-                    if (record != null)
+                (status) => {
+                    if (status != null && status.found)
                     {
-                        serverDeviceRecord = record;
-                        serverDemoBlocked = record.demo_blocked;
-                        serverDemoUsed = record.demo_used_seconds;
+                        serverDemoBlocked = status.demo_blocked;
+                        serverDemoUsed = status.demo_used_seconds;
+                        serverReportedDemo = status.demo_used_seconds;
 
                         // If server has more demo time used than local, trust the server
                         float localDemoUsed = SecureLicenseStorage.GetDemoUsedSeconds();
-                        if (record.demo_used_seconds > localDemoUsed)
+                        if (status.demo_used_seconds > localDemoUsed)
                         {
-                            Debug.Log($"[VR Licensing] Server demo time ({record.demo_used_seconds}s) > " +
+                            Debug.Log($"[VR Licensing] Server demo time ({status.demo_used_seconds}s) > " +
                                 $"local ({localDemoUsed}s). Using server value.");
-                            SecureLicenseStorage.SetDemoUsedSeconds(record.demo_used_seconds);
+                            SecureLicenseStorage.SetDemoUsedSeconds(status.demo_used_seconds);
                         }
 
-                        Debug.Log($"[VR Licensing] Server device check: demo_used={record.demo_used_seconds}s, " +
-                            $"blocked={record.demo_blocked}, sessions={record.session_count}");
+                        Debug.Log($"[VR Licensing] Server device check: demo_used={status.demo_used_seconds}s, " +
+                            $"blocked={status.demo_blocked}, sessions={status.session_count}");
                     }
                 },
                 (error) => {
-                    serverCheckDone = true;
                     Debug.LogWarning($"[VR Licensing] Server device check failed (using local data): {error}");
                 }
             );
@@ -329,23 +333,17 @@ namespace VRLicensing
 
         private IEnumerator ValidateKeyOnline(string licenseKey, Action<bool, string> onResult)
         {
-            bool completed = false;
             LicenseData validLicense = null;
             string errorMessage = null;
 
-            yield return supabaseClient.ValidateLicenseKey(
+            // Validation AND device binding happen atomically server-side via RPC.
+            // The server rejects keys bound to another headset (code: bound_other_device).
+            yield return supabaseClient.ValidateAndBindLicense(
                 licenseKey,
                 config.productId,
-                (license) =>
-                {
-                    validLicense = license;
-                    completed = true;
-                },
-                (error) =>
-                {
-                    errorMessage = error;
-                    completed = true;
-                }
+                SystemInfo.deviceUniqueIdentifier,
+                (license) => { validLicense = license; },
+                (code, error) => { errorMessage = error; }
             );
 
             if (validLicense == null)
@@ -355,58 +353,10 @@ namespace VRLicensing
                 yield break;
             }
 
-            // ── Device Binding Check ──
-            string currentDeviceId = SystemInfo.deviceUniqueIdentifier;
-
-            if (!string.IsNullOrEmpty(validLicense.device_unique_id))
-            {
-                // License is already bound to a device
-                if (validLicense.device_unique_id != currentDeviceId)
-                {
-                    // Bound to a DIFFERENT device — reject
-                    string rejectMsg = "This license is already registered on another device. " +
-                        "Each license can only be used on one headset.";
-                    Debug.LogWarning($"[VR Licensing] Device binding mismatch. " +
-                        $"License bound to: {validLicense.device_unique_id}, " +
-                        $"Current device: {currentDeviceId}");
-                    OnValidationError?.Invoke(rejectMsg);
-                    onResult?.Invoke(false, rejectMsg);
-                    yield break;
-                }
-
-                // Bound to THIS device — proceed normally
-                Debug.Log("[VR Licensing] License already bound to this device. Proceeding.");
-            }
-            else
-            {
-                // License not yet bound — first activation, bind it now
-                Debug.Log($"[VR Licensing] First activation — binding license to device {currentDeviceId}...");
-
-                bool bindSuccess = false;
-                string bindError = null;
-
-                yield return supabaseClient.BindLicenseToDevice(
-                    validLicense.id,
-                    currentDeviceId,
-                    () => { bindSuccess = true; },
-                    (error) => { bindError = error; }
-                );
-
-                if (!bindSuccess)
-                {
-                    string failMsg = $"License validated but device binding failed: {bindError}";
-                    Debug.LogError($"[VR Licensing] {failMsg}");
-                    // Still activate locally — the binding can be retried next session
-                    Debug.LogWarning("[VR Licensing] Proceeding with activation despite binding failure.");
-                }
-
-                // Update the local license data with the device ID
-                validLicense.device_unique_id = currentDeviceId;
-            }
-
-            // License valid and device check passed — activate
+            // License valid and bound to this device — activate
             SecureLicenseStorage.SaveLicenseData(validLicense);
             demoManager.StopDemo();
+            activatingFromCache = false; // fresh key redemption — show the "redeemed" notice
             ActivateLicense(validLicense);
             onResult?.Invoke(true, null);
         }
@@ -431,11 +381,8 @@ namespace VRLicensing
             // Send device telemetry (fire-and-forget, non-blocking)
             StartCoroutine(SendSessionTelemetry(license.id));
 
-            // Register device on server with license key
-            float demoUsed = SecureLicenseStorage.GetDemoUsedSeconds();
-            StartCoroutine(supabaseClient.RegisterDevice(
-                config.productId, demoUsed, sessionCount,
-                license.license_key, null, null));
+            // Report session to server (delta since last report; refreshes last_license_key)
+            StartCoroutine(ReportDemoUsage(license.license_key));
         }
 
         /// <summary>
@@ -655,16 +602,20 @@ namespace VRLicensing
         {
             if (uiBuilder == null) return;
 
+            // The demo countdown HUD is only visible while in Demo state.
+            if (state != LicenseState.Demo) uiBuilder.HideDemoTimer();
+
             switch (state)
             {
                 case LicenseState.Unlicensed:
                     uiBuilder.ShowWelcome();
                     break;
                 case LicenseState.Demo:
-                    uiBuilder.HideAll(); // UI hidden, user is in the simulator
+                    uiBuilder.HideAll();       // modal hidden, user is in the simulator
+                    uiBuilder.ShowDemoTimer(); // ...but keep the countdown on screen
                     break;
                 case LicenseState.Licensed:
-                    uiBuilder.ShowLicensed();
+                    uiBuilder.ShowLicensed(activatingFromCache);
                     break;
                 case LicenseState.Expired:
                     if (isLicenseExpiry)
@@ -684,6 +635,8 @@ namespace VRLicensing
             isLicenseExpiry = false;
             SetState(LicenseState.Expired);
             sessionTracker.StopTracking();
+            // Push the demo time consumed this session to the server immediately.
+            StartCoroutine(ReportDemoUsage(cachedLicense?.license_key));
             OnDemoExpired?.Invoke();
         }
 
@@ -693,15 +646,34 @@ namespace VRLicensing
         /// </summary>
         private IEnumerator SendStartupTelemetry(string licenseId)
         {
-            float demoUsed = SecureLicenseStorage.GetDemoUsedSeconds();
-            float avgFps = fpsFrameCount > 0 ? fpsAccumulator / fpsFrameCount : 0f;
+            // Report the startup session to the server (delta since last report).
+            // This also upserts the device record (last_seen, model, etc.).
+            yield return ReportDemoUsage(cachedLicense?.license_key);
+        }
 
-            // Register device on server (upsert)
-            yield return supabaseClient.RegisterDevice(
-                config.productId, demoUsed, sessionCount,
-                cachedLicense?.license_key,
-                (record) => { serverDeviceRecord = record; },
-                (error) => { Debug.LogWarning($"[VR Licensing] Startup registration failed: {error}"); }
+        /// <summary>
+        /// Reports demo usage to the server as a positive delta (server ADDS it and
+        /// never lowers the counter). Keeps <see cref="serverReportedDemo"/> in sync so
+        /// repeated calls only send newly-consumed time, and adopts the server total if
+        /// it is ahead (e.g. usage from another session / anti-wipe).
+        /// </summary>
+        private IEnumerator ReportDemoUsage(string lastLicenseKey)
+        {
+            float localDemo = SecureLicenseStorage.GetDemoUsedSeconds();
+            float delta = Mathf.Max(0f, localDemo - serverReportedDemo);
+
+            yield return supabaseClient.ReportDeviceSession(
+                config.productId, delta, lastLicenseKey,
+                (status) =>
+                {
+                    if (status != null)
+                    {
+                        serverReportedDemo = status.demo_used_seconds;
+                        if (status.demo_used_seconds > localDemo)
+                            SecureLicenseStorage.SetDemoUsedSeconds(status.demo_used_seconds);
+                    }
+                },
+                (error) => { Debug.LogWarning($"[VR Licensing] Session report failed: {error}"); }
             );
         }
     }
