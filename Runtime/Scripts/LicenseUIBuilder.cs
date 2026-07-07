@@ -85,6 +85,14 @@ namespace VRLicensing
         private const float DEMO_HUD_FORWARD = 1.0f;   // distance in front of the eyes
         private const float DEMO_HUD_FOLLOW_SPEED = 12f; // higher = more rigidly head-locked
 
+        // Main license modal — lazy "dead-zone" follow so it can't be ignored, yet stays
+        // stable while the user aims at its buttons.
+        private bool recenteringModal;
+        private const float MODAL_RECENTER_ENTER_ANGLE = 32f; // start recentering past this off-center angle
+        private const float MODAL_RECENTER_EXIT_ANGLE = 5f;   // settle once re-centered within this angle
+        private const float MODAL_MAX_DISTANCE = CANVAS_DISTANCE * 1.8f; // also recenter if the user walks away
+        private const float MODAL_FOLLOW_SPEED = 5f;          // gentle for comfort
+
         private LicenseConfig config;
         private LicenseManager manager;
         private bool isPositioned;
@@ -1590,9 +1598,15 @@ namespace VRLicensing
 
         private void Update()
         {
-            if (demoTimerCanvas == null || !demoTimerCanvas.gameObject.activeSelf) return;
-
             var cam = ResolveHudCam();
+
+            // Main license modal: keep it in front of the player while visible so it
+            // can't be turned away from and ignored.
+            if (cam != null && overlayPanel != null && overlayPanel.activeSelf)
+                FollowMainModal(cam);
+
+            // Demo timer HUD (only while the demo runs).
+            if (demoTimerCanvas == null || !demoTimerCanvas.gameObject.activeSelf) return;
             if (cam != null) PositionDemoHud(cam, instant: false);
 
             if (demoManagerRef == null && manager != null)
@@ -1602,6 +1616,38 @@ namespace VRLicensing
             float remaining = Mathf.Max(0f, demoManagerRef.RemainingDemoSeconds);
             demoTimerText.text = "Demo  ·  " + FormatTime(remaining) + " left";
             demoTimerText.color = remaining <= 60f ? COLOR_ERROR : COLOR_TEXT;
+        }
+
+        /// <summary>
+        /// Lazy "dead-zone" follow for the main license canvas: it stays put while the user
+        /// looks at it (so they can aim at the buttons), but if they turn away past
+        /// MODAL_RECENTER_ENTER_ANGLE (or walk too far), it eases back to sit in front of
+        /// them again — so the licensing gate can't simply be ignored.
+        /// </summary>
+        private void FollowMainModal(Camera cam)
+        {
+            if (canvas == null) return;
+
+            Vector3 camPos = cam.transform.position;
+            if (camPos.y < 0.5f) camPos.y = 1.5f; // eye-level fallback (Editor without HMD)
+
+            Vector3 desiredPos = camPos + cam.transform.forward * CANVAS_DISTANCE;
+            Quaternion desiredRot = Quaternion.LookRotation(desiredPos - camPos, Vector3.up);
+
+            Vector3 toCanvas = canvas.transform.position - camPos;
+            float angle = Vector3.Angle(cam.transform.forward, toCanvas);
+
+            if (angle > MODAL_RECENTER_ENTER_ANGLE || toCanvas.magnitude > MODAL_MAX_DISTANCE)
+                recenteringModal = true;
+
+            if (recenteringModal)
+            {
+                float k = 1f - Mathf.Exp(-MODAL_FOLLOW_SPEED * Time.unscaledDeltaTime);
+                canvas.transform.position = Vector3.Lerp(canvas.transform.position, desiredPos, k);
+                canvas.transform.rotation = Quaternion.Slerp(canvas.transform.rotation, desiredRot, k);
+                if (angle < MODAL_RECENTER_EXIT_ANGLE)
+                    recenteringModal = false;
+            }
         }
 
         private Camera ResolveHudCam()
