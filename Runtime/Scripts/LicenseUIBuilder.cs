@@ -1476,6 +1476,15 @@ namespace VRLicensing
             var hideField = xrKeyboardDisplayType.GetField("m_HideKeyboardOnDisable", flags);
             if (hideField != null)
                 hideField.SetValue(display, false);
+
+            // clearTextOnOpen = true — critical for the 4-field key layout with a shared
+            // global keyboard. On auto-advance, focusing the next field opens the keyboard
+            // with that field's text; forcing it empty first makes keyboard.Open(field.text)
+            // reset the shared buffer to "" instead of carrying the previous field's text
+            // (e.g. typing "SBOX" in field 1 was cascading into every field).
+            var clearOnOpenField = xrKeyboardDisplayType.GetField("m_ClearTextOnOpen", flags);
+            if (clearOnOpenField != null)
+                clearOnOpenField.SetValue(display, true);
         }
 
         private IEnumerator ShowSuccessAndHide(string title, string subtitle, float holdSeconds)
