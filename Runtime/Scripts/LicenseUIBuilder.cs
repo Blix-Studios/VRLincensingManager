@@ -72,10 +72,18 @@ namespace VRLicensing
         private TextMeshProUGUI successSubtitleText;
         private bool successAnimating;
 
-        // Demo timer HUD (stays visible while the demo is running)
+        // Demo timer HUD — its own world-space canvas, head-locked to the bottom-right of view
+        private Canvas demoTimerCanvas;
         private GameObject demoTimerPanel;
         private TextMeshProUGUI demoTimerText;
         private DemoModeManager demoManagerRef;
+        private Camera hudCam;
+
+        // HUD placement relative to the camera (camera-local metres). Tune to taste.
+        private const float DEMO_HUD_RIGHT = 0.42f;    // + = right
+        private const float DEMO_HUD_DOWN = -0.30f;    // - = down
+        private const float DEMO_HUD_FORWARD = 1.0f;   // distance in front of the eyes
+        private const float DEMO_HUD_FOLLOW_SPEED = 12f; // higher = more rigidly head-locked
 
         private LicenseConfig config;
         private LicenseManager manager;
@@ -1522,24 +1530,33 @@ namespace VRLicensing
         // ─────────────────── DEMO TIMER HUD ───────────────────
 
         /// <summary>
-        /// Builds a compact countdown bar shown while the demo runs. It lives directly
-        /// under the canvas (a sibling of the overlay) so it stays visible even when the
-        /// modal overlay is hidden during gameplay.
+        /// Builds the demo countdown as its OWN world-space canvas (separate from the
+        /// license modal) so it can be head-locked to the bottom-right of the user's view
+        /// and stay readable while they move and look around during the demo.
         /// </summary>
         private void BuildDemoTimer()
         {
-            var canvasRt = canvas.GetComponent<RectTransform>();
+            var canvasGo = new GameObject("DemoTimerCanvas");
+            canvasGo.transform.SetParent(transform);
 
-            demoTimerPanel = CreatePanel("DemoTimerHUD", canvasRt, new Color(0.06f, 0.07f, 0.10f, 0.82f));
-            var rt = demoTimerPanel.GetComponent<RectTransform>();
-            rt.anchorMin = new Vector2(0.5f, 1f);
-            rt.anchorMax = new Vector2(0.5f, 1f);
-            rt.pivot = new Vector2(0.5f, 1f);
-            rt.sizeDelta = new Vector2(340, 54);
-            rt.anchoredPosition = new Vector2(0, -14);
+            demoTimerCanvas = canvasGo.AddComponent<Canvas>();
+            demoTimerCanvas.renderMode = RenderMode.WorldSpace;
+            demoTimerCanvas.sortingOrder = 101; // above the license canvas
+
+            var scaler = canvasGo.AddComponent<CanvasScaler>();
+            scaler.dynamicPixelsPerUnit = 10f;
+            scaler.referencePixelsPerUnit = 100f;
+
+            var crt = canvasGo.GetComponent<RectTransform>();
+            crt.sizeDelta = new Vector2(340, 54);
+            canvasGo.transform.localScale = Vector3.one * CANVAS_SCALE;
+
+            // Background bar (fills the canvas)
+            demoTimerPanel = CreatePanel("DemoTimerHUD", crt, new Color(0.06f, 0.07f, 0.10f, 0.85f), stretch: true);
+            var panelRt = demoTimerPanel.GetComponent<RectTransform>();
 
             // Accent underline
-            var bar = CreatePanel("DemoTimerBar", rt, COLOR_GREEN);
+            var bar = CreatePanel("DemoTimerBar", panelRt, COLOR_GREEN);
             var barRt = bar.GetComponent<RectTransform>();
             barRt.anchorMin = new Vector2(0f, 0f);
             barRt.anchorMax = new Vector2(1f, 0f);
@@ -1547,29 +1564,36 @@ namespace VRLicensing
             barRt.sizeDelta = new Vector2(0, 4);
             barRt.anchoredPosition = Vector2.zero;
 
-            demoTimerText = CreateTMPText("DemoTimerText", rt,
+            demoTimerText = CreateTMPText("DemoTimerText", panelRt,
                 "Demo", 18, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
                 stretch: true, padding: new Vector4(12, 12, 8, 12));
 
-            demoTimerPanel.SetActive(false);
+            canvasGo.SetActive(false);
         }
 
-        /// <summary>Shows the demo countdown HUD (called when the demo starts).</summary>
+        /// <summary>Shows the head-locked demo countdown HUD (called when the demo starts).</summary>
         public void ShowDemoTimer()
         {
-            EnsurePositioned();
-            if (demoTimerPanel != null) demoTimerPanel.SetActive(true);
+            if (demoTimerCanvas == null) return;
+            demoTimerCanvas.gameObject.SetActive(true);
+
+            // Snap into place immediately so it doesn't flash at the world origin.
+            var cam = ResolveHudCam();
+            if (cam != null) PositionDemoHud(cam, instant: true);
         }
 
         /// <summary>Hides the demo countdown HUD.</summary>
         public void HideDemoTimer()
         {
-            if (demoTimerPanel != null) demoTimerPanel.SetActive(false);
+            if (demoTimerCanvas != null) demoTimerCanvas.gameObject.SetActive(false);
         }
 
         private void Update()
         {
-            if (demoTimerPanel == null || !demoTimerPanel.activeSelf) return;
+            if (demoTimerCanvas == null || !demoTimerCanvas.gameObject.activeSelf) return;
+
+            var cam = ResolveHudCam();
+            if (cam != null) PositionDemoHud(cam, instant: false);
 
             if (demoManagerRef == null && manager != null)
                 demoManagerRef = manager.GetComponent<DemoModeManager>();
@@ -1578,6 +1602,36 @@ namespace VRLicensing
             float remaining = Mathf.Max(0f, demoManagerRef.RemainingDemoSeconds);
             demoTimerText.text = "Demo  ·  " + FormatTime(remaining) + " left";
             demoTimerText.color = remaining <= 60f ? COLOR_ERROR : COLOR_TEXT;
+        }
+
+        private Camera ResolveHudCam()
+        {
+            // Camera.main can change on scene load; re-fetch when the cached one dies.
+            if (hudCam == null) hudCam = Camera.main;
+            return hudCam;
+        }
+
+        /// <summary>
+        /// Pins the HUD to the bottom-right of the user's view. Follows head position and
+        /// rotation (head-locked) with light smoothing so it stays in the field of view.
+        /// </summary>
+        private void PositionDemoHud(Camera cam, bool instant)
+        {
+            Vector3 offset = new Vector3(DEMO_HUD_RIGHT, DEMO_HUD_DOWN, DEMO_HUD_FORWARD);
+            Vector3 targetPos = cam.transform.position + cam.transform.rotation * offset;
+            Quaternion targetRot = Quaternion.LookRotation(targetPos - cam.transform.position, cam.transform.up);
+
+            var t = demoTimerCanvas.transform;
+            if (instant)
+            {
+                t.SetPositionAndRotation(targetPos, targetRot);
+            }
+            else
+            {
+                float k = 1f - Mathf.Exp(-DEMO_HUD_FOLLOW_SPEED * Time.unscaledDeltaTime);
+                t.position = Vector3.Lerp(t.position, targetPos, k);
+                t.rotation = Quaternion.Slerp(t.rotation, targetRot, k);
+            }
         }
 
         private static string FormatTime(float seconds)
