@@ -1214,7 +1214,9 @@ namespace VRLicensing
                 }
             }
 
-            SetupKeyFieldAutoAdvance(fields);
+            // Auto-advance intentionally removed: the shared VR keyboard carried text
+            // between fields (magically filling/skipping them). Users move between the
+            // 4 groups manually by tapping each field.
             return fields;
         }
 
@@ -1290,40 +1292,6 @@ namespace VRLicensing
             AttachXRKeyboardDisplay(inputField);
 
             return inputField;
-        }
-
-        // Guards the auto-advance against the shared keyboard's programmatic writes.
-        // Focusing the next field re-opens the global keyboard, which briefly writes the
-        // previous field's text into it (fired as onValueChanged) before clearTextOnOpen
-        // wipes it. Without this guard those writes chain-advance straight to the last
-        // field. We suppress advancing for a couple of frames after each advance so only
-        // a genuine user keystroke moves focus forward.
-        private bool m_SuppressAutoAdvance;
-
-        private void SetupKeyFieldAutoAdvance(TMP_InputField[] fields)
-        {
-            for (int i = 0; i < fields.Length; i++)
-            {
-                int idx = i;
-                fields[i].onValueChanged.AddListener((value) =>
-                {
-                    if (m_SuppressAutoAdvance) return;
-                    if (value.Length >= 4 && idx < fields.Length - 1)
-                    {
-                        fields[idx + 1].ActivateInputField();
-                        fields[idx + 1].Select();
-                        StartCoroutine(SuppressAutoAdvanceBriefly());
-                    }
-                });
-            }
-        }
-
-        private IEnumerator SuppressAutoAdvanceBriefly()
-        {
-            m_SuppressAutoAdvance = true;
-            yield return null; // let the keyboard's focus-driven text writes settle...
-            yield return null; // ...over two frames
-            m_SuppressAutoAdvance = false;
         }
 
         // ─────────────────── Utility Builders ───────────────────
