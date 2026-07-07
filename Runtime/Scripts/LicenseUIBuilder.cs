@@ -79,6 +79,12 @@ namespace VRLicensing
         private DemoModeManager demoManagerRef;
         private Camera hudCam;
 
+        // QR scanning (Quest 3/3S camera access; buttons hidden on unsupported headsets)
+        private LicenseQRScanner qrScanner;
+        private bool qrSupported = true;
+        private readonly System.Collections.Generic.List<GameObject> scanButtons =
+            new System.Collections.Generic.List<GameObject>();
+
         // HUD placement relative to the camera (camera-local metres). Tune to taste.
         private const float DEMO_HUD_RIGHT = 0.42f;    // + = right
         private const float DEMO_HUD_DOWN = -0.30f;    // - = down
@@ -400,11 +406,11 @@ namespace VRLicensing
                 COLOR_ACCENT, COLOR_ACCENT_HOVER,
                 OnEnterKeyClicked);
 
-            // Button 3: Scan QR Passthrough (secondary)
-            CreateLayoutButton("ScanQRBtn", btnContRt,
-                "Scan QR (Passthrough)", 45,
+            // Button 3: Scan QR (secondary) — captured so it can be hidden on unsupported headsets
+            scanButtons.Add(CreateLayoutButton("ScanQRBtn", btnContRt,
+                "Scan QR", 45,
                 COLOR_SECONDARY, COLOR_SECONDARY_HOVER,
-                OnScanQRClicked);
+                OnScanQRClicked));
 
             // Info text
             welcomeInfoText = CreateTMPText("WelcomeInfo", panelRt,
@@ -520,11 +526,11 @@ namespace VRLicensing
                 anchor: new Vector2(0.5f, 0f), pivot: new Vector2(0.5f, 0f),
                 size: new Vector2(500, 25), pos: new Vector2(0, 55));
 
-            // Scan QR button
-            CreatePositionedButton("ExpScanQR", panelRt,
-                "Scan QR (Passthrough)", new Vector2(260, 35), new Vector2(0, 18),
+            // Scan QR button — captured so it can be hidden on unsupported headsets
+            scanButtons.Add(CreatePositionedButton("ExpScanQR", panelRt,
+                "Scan QR", new Vector2(260, 35), new Vector2(0, 18),
                 COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnScanQRClicked,
-                anchorAtBottom: true);
+                anchorAtBottom: true).gameObject);
 
             demoExpiredPanel.SetActive(false);
         }
@@ -578,11 +584,11 @@ namespace VRLicensing
                 anchor: new Vector2(0.5f, 0f), pivot: new Vector2(0.5f, 0f),
                 size: new Vector2(500, 25), pos: new Vector2(0, 55));
 
-            // Scan QR button
-            CreatePositionedButton("LicExpScanQR", panelRt,
-                "Scan QR (Passthrough)", new Vector2(260, 35), new Vector2(0, 18),
+            // Scan QR button — captured so it can be hidden on unsupported headsets
+            scanButtons.Add(CreatePositionedButton("LicExpScanQR", panelRt,
+                "Scan QR", new Vector2(260, 35), new Vector2(0, 18),
                 COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnScanQRClicked,
-                anchorAtBottom: true);
+                anchorAtBottom: true).gameObject);
 
             licenseExpiredPanel.SetActive(false);
         }
@@ -682,7 +688,72 @@ namespace VRLicensing
 
         private void OnScanQRClicked()
         {
-            TogglePassthrough();
+            if (!qrSupported) return;
+
+            // A second press while scanning cancels.
+            if (qrScanner != null && qrScanner.IsScanning)
+            {
+                qrScanner.StopScan();
+                DisablePassthrough();
+                SetScanStatus("Scan cancelled.", COLOR_TEXT_DIM);
+                return;
+            }
+
+            if (qrScanner == null)
+                qrScanner = gameObject.AddComponent<LicenseQRScanner>();
+
+            EnablePassthrough();
+            SetScanStatus("Starting camera...", COLOR_TEXT_DIM);
+
+            qrScanner.StartScan(30f,
+                onDecoded: key =>
+                {
+                    DisablePassthrough();
+                    OnQRDecoded(key);
+                },
+                onStatus: msg => SetScanStatus(msg, COLOR_TEXT_DIM),
+                onUnsupported: msg =>
+                {
+                    DisablePassthrough();
+                    qrSupported = false;
+                    HideScanButtons(); // this headset can't scan — remove the option entirely
+                    SetScanStatus(msg + " Enter your key manually.", COLOR_ERROR);
+                });
+        }
+
+        private void OnQRDecoded(string key)
+        {
+            SetScanStatus("QR detected — validating...", COLOR_SUCCESS);
+
+            // Mirror the key into the visible fields (if a key-entry panel is open) for feedback.
+            if (keyInputPanel.activeSelf) FillKeyFields(keyFields, key);
+            else if (demoExpiredPanel.activeSelf) FillKeyFields(expiredKeyFields, key);
+            else if (licenseExpiredPanel.activeSelf) FillKeyFields(licExpiredKeyFields, key);
+
+            SubmitKey(key);
+        }
+
+        private void HideScanButtons()
+        {
+            foreach (var b in scanButtons)
+                if (b != null) b.SetActive(false);
+        }
+
+        private void FillKeyFields(TMP_InputField[] fields, string key)
+        {
+            if (fields == null || string.IsNullOrEmpty(key)) return;
+            var groups = key.Split('-');
+            for (int i = 0; i < fields.Length; i++)
+                if (fields[i] != null)
+                    fields[i].text = i < groups.Length ? groups[i] : "";
+        }
+
+        private void SetScanStatus(string msg, Color color)
+        {
+            if (keyInputPanel.activeSelf) { statusText.text = msg; statusText.color = color; }
+            else if (demoExpiredPanel.activeSelf) { expiredStatusText.text = msg; expiredStatusText.color = color; }
+            else if (licenseExpiredPanel.activeSelf) { licExpiredStatusText.text = msg; licExpiredStatusText.color = color; }
+            else if (welcomePanel.activeSelf && welcomeInfoText != null) { welcomeInfoText.text = msg; }
         }
 
         private void OnBackClicked()
@@ -1388,7 +1459,7 @@ namespace VRLicensing
             return btn;
         }
 
-        private void CreateLayoutButton(string name, RectTransform parent,
+        private GameObject CreateLayoutButton(string name, RectTransform parent,
             string label, float height,
             Color normal, Color hover, UnityEngine.Events.UnityAction onClick)
         {
@@ -1418,6 +1489,8 @@ namespace VRLicensing
                 label, 15, FontStyles.Bold, Color.white, TextAlignmentOptions.Center,
                 stretch: true, padding: new Vector4(15, 15, 5, 5));
             labelTMP.raycastTarget = false;
+
+            return go;
         }
 
         private void SetRectFill(RectTransform rt)
