@@ -1267,11 +1267,10 @@ namespace VRLicensing
             inputField.caretColor = COLOR_ACCENT;
             inputField.selectionColor = new Color(COLOR_ACCENT.r, COLOR_ACCENT.g, COLOR_ACCENT.b, 0.3f);
 
-            inputField.onValueChanged.AddListener((value) =>
-            {
-                string upper = value.ToUpperInvariant();
-                if (upper != value) inputField.text = upper;
-            });
+            // NOTE: do NOT force-uppercase inside onValueChanged — setting inputField.text
+            // there fights the XR keyboard's two-way binding (field→UPPER→keyboard→lower→…)
+            // and causes an infinite recursion / StackOverflow. The key is uppercased at
+            // submit time via NormalizeKey instead.
 
             // Attach XR Keyboard Display for VR keyboard integration
             AttachXRKeyboardDisplay(inputField);
