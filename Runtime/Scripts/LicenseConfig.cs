@@ -29,5 +29,11 @@ namespace VRLicensing
 
         [Tooltip("Visible simulator name (displayed in the licensing UI)")]
         public string appDisplayName = "VR Simulator";
+
+        [Header("Purchase Call-To-Action")]
+        [Tooltip("Store URL shown (as text and as a QR code) when the demo runs out. " +
+                 "Keep it short — shorter URLs produce a lower-density QR that is easier " +
+                 "to scan with a phone from inside the headset.")]
+        public string purchaseUrl = "vrinstructors.com";
     }
 }

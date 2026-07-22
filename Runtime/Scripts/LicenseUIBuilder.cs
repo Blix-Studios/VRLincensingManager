@@ -17,8 +17,11 @@ namespace VRLicensing
         // ─────────────────────── Design Constants ───────────────────────
         private const float CANVAS_SCALE = 0.001f;
         private const float CANVAS_DISTANCE = 2.0f;
-        private const int CANVAS_PX_WIDTH = 800;
-        private const int CANVAS_PX_HEIGHT = 500;
+        // Wide enough to hold the two-column "Demo Expired" panel (900px) with margin.
+        // Panels are not clipped by the overlay, so anything wider would visibly spill
+        // outside the dimmed backdrop.
+        private const int CANVAS_PX_WIDTH = 1000;
+        private const int CANVAS_PX_HEIGHT = 560;
 
         // Colors — dark, premium palette
         private static readonly Color COLOR_BG_OVERLAY = new Color(0f, 0f, 0f, 0.85f);
@@ -77,6 +80,9 @@ namespace VRLicensing
         private GameObject demoTimerPanel;
         private TextMeshProUGUI demoTimerText;
         private DemoModeManager demoManagerRef;
+
+        // Runtime-generated purchase QR — released in OnDestroy (textures are not GC'd).
+        private Texture2D purchaseQrTexture;
         private Camera hudCam;
 
         // QR scanning (Quest 3/3S camera access; buttons hidden on unsupported headsets)
@@ -142,15 +148,15 @@ namespace VRLicensing
             licenseExpiredPanel.SetActive(false);
             successPanel.SetActive(false);
 
-            float hours = config.demoDurationSeconds / 3600f;
             float used = 0f;
             if (manager != null)
             {
                 var dm = manager.GetComponent<DemoModeManager>();
                 if (dm != null) used = dm.TotalDemoUsedSeconds;
             }
-            float remainingH = Mathf.Max(0, (config.demoDurationSeconds - used) / 3600f);
-            welcomeInfoText.text = $"Free demo: {remainingH:F1}h remaining of {hours:F0}h";
+            float remaining = Mathf.Max(0f, config.demoDurationSeconds - used);
+            welcomeInfoText.text =
+                $"Free demo: {FormatDuration(remaining)} remaining of {FormatDuration(config.demoDurationSeconds)}";
         }
 
         /// <summary>Shows the Key Input panel for entering a license key.</summary>
@@ -483,11 +489,15 @@ namespace VRLicensing
         {
             var overlayRt = overlayPanel.GetComponent<RectTransform>();
 
+            // Two columns: "buy it" on the left, "already bought it" on the right.
+            // The demo ending is the one moment we have the user's full attention, so the
+            // purchase path gets equal billing with the key-entry path instead of being
+            // an afterthought.
             demoExpiredPanel = CreatePanel("DemoExpiredPanel", overlayRt, COLOR_PANEL_BG);
             var panelRt = demoExpiredPanel.GetComponent<RectTransform>();
             panelRt.anchorMin = new Vector2(0.5f, 0.5f);
             panelRt.anchorMax = new Vector2(0.5f, 0.5f);
-            panelRt.sizeDelta = new Vector2(650, 400);
+            panelRt.sizeDelta = new Vector2(900, 430);
             panelRt.anchoredPosition = Vector2.zero;
 
             // Header
@@ -506,33 +516,151 @@ namespace VRLicensing
 
             // Message
             CreateTMPText("ExpMsg", panelRt,
-                $"Your trial period for {config.appDisplayName} has ended.\nEnter a license key to continue.",
-                13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
+                $"Your free trial of {config.appDisplayName} has ended.",
+                14, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
-                size: new Vector2(550, 45), pos: new Vector2(0, -72));
+                size: new Vector2(820, 30), pos: new Vector2(0, -74));
 
-            // Key fields
-            expiredKeyField = BuildKeyField("ExpKeyField", panelRt, new Vector2(0, 10));
+            // Vertical divider between the two columns
+            var divider = CreatePanel("ExpDivider", panelRt, COLOR_TEXT_DIM * 0.4f);
+            var divRt = divider.GetComponent<RectTransform>();
+            divRt.anchorMin = new Vector2(0.5f, 0.5f);
+            divRt.anchorMax = new Vector2(0.5f, 0.5f);
+            divRt.sizeDelta = new Vector2(2, 250);
+            divRt.anchoredPosition = new Vector2(0, -30);
 
-            // Activate button
+            BuildPurchaseCta(panelRt, columnX: -225f);
+
+            // ── Right column: redeem an existing key ──
+            CreateTMPText("ExpRedeemTitle", panelRt,
+                "Already have a license key?",
+                16, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
+                size: new Vector2(410, 26), pos: new Vector2(225, 85));
+
+            expiredKeyField = BuildKeyField("ExpKeyField", panelRt, new Vector2(225, 25), width: 400f);
+
             expiredActivateButton = CreatePositionedButton("ExpActivateBtn", panelRt,
-                "Activate License", new Vector2(260, 42), new Vector2(0, -45),
+                "Activate License", new Vector2(260, 42), new Vector2(225, -40),
                 COLOR_ACCENT, COLOR_ACCENT_HOVER, OnExpiredActivateClicked);
             expiredActivateButtonText = expiredActivateButton.GetComponentInChildren<TextMeshProUGUI>();
 
-            // Status
-            expiredStatusText = CreateTMPText("ExpStatusText", panelRt,
-                "", 13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
-                anchor: new Vector2(0.5f, 0f), pivot: new Vector2(0.5f, 0f),
-                size: new Vector2(500, 25), pos: new Vector2(0, 55));
-
             // Scan QR button — captured so it can be hidden on unsupported headsets
             scanButtons.Add(CreatePositionedButton("ExpScanQR", panelRt,
-                "Scan QR", new Vector2(260, 35), new Vector2(0, 18),
-                COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnScanQRClicked,
-                anchorAtBottom: true).gameObject);
+                "Scan QR", new Vector2(260, 35), new Vector2(225, -95),
+                COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnScanQRClicked).gameObject);
+
+            expiredStatusText = CreateTMPText("ExpStatusText", panelRt,
+                "", 13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
+                size: new Vector2(410, 40), pos: new Vector2(225, -145));
 
             demoExpiredPanel.SetActive(false);
+        }
+
+        /// <summary>
+        /// Left column of the "Demo Expired" panel: where to buy, as text and as a QR the
+        /// user can scan with their phone without taking the headset off.
+        /// </summary>
+        private void BuildPurchaseCta(RectTransform panelRt, float columnX)
+        {
+            CreateTMPText("ExpBuyTitle", panelRt,
+                "Get the full version",
+                16, FontStyles.Bold, COLOR_GREEN, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
+                size: new Vector2(410, 26), pos: new Vector2(columnX, 85));
+
+            string url = string.IsNullOrWhiteSpace(config.purchaseUrl)
+                ? "vrinstructors.com"
+                : config.purchaseUrl.Trim();
+
+            Texture2D qr = TryCreateQRTexture(url);
+
+            if (qr != null)
+            {
+                purchaseQrTexture = qr;
+
+                // White quiet-zone backing so the code stays scannable on the dark panel.
+                var frame = CreatePanel("ExpQrFrame", panelRt, Color.white);
+                var frameRt = frame.GetComponent<RectTransform>();
+                frameRt.anchorMin = new Vector2(0.5f, 0.5f);
+                frameRt.anchorMax = new Vector2(0.5f, 0.5f);
+                frameRt.sizeDelta = new Vector2(180, 180);
+                frameRt.anchoredPosition = new Vector2(columnX, -20);
+
+                var qrGo = new GameObject("ExpQrImage");
+                qrGo.transform.SetParent(frameRt, false);
+                var raw = qrGo.AddComponent<RawImage>();
+                raw.texture = qr;
+                raw.raycastTarget = false;
+                var qrRt = raw.rectTransform;
+                qrRt.anchorMin = Vector2.zero;
+                qrRt.anchorMax = Vector2.one;
+                qrRt.offsetMin = Vector2.zero;
+                qrRt.offsetMax = Vector2.zero;
+            }
+
+            CreateTMPText("ExpBuyUrl", panelRt,
+                url,
+                17, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
+                size: new Vector2(410, 26), pos: new Vector2(columnX, -128));
+
+            CreateTMPText("ExpBuyHint", panelRt,
+                qr != null
+                    ? "Scan with your phone, or visit the address above."
+                    : "Visit the address above to purchase a license.",
+                12, FontStyles.Italic, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
+                size: new Vector2(410, 36), pos: new Vector2(columnX, -158));
+        }
+
+        /// <summary>
+        /// Renders <paramref name="payload"/> as a crisp, point-filtered QR texture.
+        /// Returns null (and logs) if the payload cannot be encoded, so the CTA degrades
+        /// to text instead of breaking the panel.
+        /// </summary>
+        private static Texture2D TryCreateQRTexture(string payload, int quietZone = 4)
+        {
+            try
+            {
+                bool[,] matrix = QRCodeEncoder.Encode(payload);
+                int modules = matrix.GetLength(0);
+                int size = modules + quietZone * 2;
+
+                var tex = new Texture2D(size, size, TextureFormat.RGBA32, false)
+                {
+                    filterMode = FilterMode.Point, // keep module edges hard when scaled up
+                    wrapMode = TextureWrapMode.Clamp
+                };
+
+                var light = new Color32(255, 255, 255, 255);
+                var dark = new Color32(0, 0, 0, 255);
+                var pixels = new Color32[size * size];
+
+                for (int y = 0; y < size; y++)
+                {
+                    // Texture rows run bottom-up; matrix row 0 is the top of the symbol.
+                    int row = modules - 1 - (y - quietZone);
+                    for (int x = 0; x < size; x++)
+                    {
+                        int col = x - quietZone;
+                        bool isDark = row >= 0 && row < modules
+                                   && col >= 0 && col < modules
+                                   && matrix[row, col];
+                        pixels[y * size + x] = isDark ? dark : light;
+                    }
+                }
+
+                tex.SetPixels32(pixels);
+                tex.Apply(false, false);
+                return tex;
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[VR Licensing] Could not build purchase QR for '{payload}': {e.Message}");
+                return null;
+            }
         }
 
         // ─────────────────── LICENSE EXPIRED PANEL ───────────────────
@@ -1181,15 +1309,16 @@ namespace VRLicensing
         // A single input field for the whole key (XXXX-XXXX-XXXX-XXXX). One field paired
         // with one VR keyboard makes typing/backspace/editing work naturally — the 4-field
         // layout fought the shared global keyboard (desync, stuck backspace, carry-over).
-        private TMP_InputField BuildKeyField(string name, RectTransform parent, Vector2 position)
+        private TMP_InputField BuildKeyField(string name, RectTransform parent, Vector2 position,
+            float width = 520f)
         {
-            var field = CreateKeyInputField(name, parent, 520f,
+            var field = CreateKeyInputField(name, parent, width,
                 charLimit: 19, placeholderText: "XXXX-XXXX-XXXX-XXXX", allowDashes: true);
 
             var rt = field.GetComponent<RectTransform>();
             rt.anchorMin = new Vector2(0.5f, 0.5f);
             rt.anchorMax = new Vector2(0.5f, 0.5f);
-            rt.sizeDelta = new Vector2(520, 50);
+            rt.sizeDelta = new Vector2(width, 50);
             rt.anchoredPosition = position;
             return field;
         }
@@ -1735,6 +1864,30 @@ namespace VRLicensing
                 t.position = Vector3.Lerp(t.position, targetPos, k);
                 t.rotation = Quaternion.Slerp(t.rotation, targetRot, k);
             }
+        }
+
+        private void OnDestroy()
+        {
+            if (purchaseQrTexture != null)
+            {
+                Destroy(purchaseQrTexture);
+                purchaseQrTexture = null;
+            }
+        }
+
+        /// <summary>
+        /// Human-readable trial length. Demos are commonly configured well under an hour
+        /// (10-15 min), so formatting everything as hours would render "0h".
+        /// </summary>
+        private static string FormatDuration(float seconds)
+        {
+            if (seconds < 3600f)
+                return $"{Mathf.CeilToInt(seconds / 60f)} min";
+
+            float hours = seconds / 3600f;
+            return Mathf.Approximately(hours, Mathf.Round(hours))
+                ? $"{Mathf.RoundToInt(hours)} h"
+                : $"{hours:F1} h";
         }
 
         private static string FormatTime(float seconds)
