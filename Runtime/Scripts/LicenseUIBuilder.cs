@@ -1625,6 +1625,7 @@ namespace VRLicensing
         {
             var cam = ResolveHudCam();
 
+            EnforceCameraOffset(cam);
             SyncPassthrough(cam);
             SyncModality();
 
@@ -1805,6 +1806,51 @@ namespace VRLicensing
         private int modalityRescanIn;
         private int originGuardIn;
         private int diagnosticsIn;
+
+        // The XR rig's camera-offset height as designed, captured on the very first frame
+        // of the app — before any AR subsystem can have touched it. Static: one value for
+        // the app's lifetime, across every scene.
+        private static float designCameraOffsetY = float.NaN;
+        private float offsetWarnCooldown;
+
+        /// <summary>
+        /// Pins the rig's camera-offset object to its designed height, every frame, in
+        /// every scene. Measured on device: the first time the AR camera subsystem starts
+        /// (for the passthrough background), the XR Origin completes a floor-mode
+        /// recalibration and zeroes its camera offset — permanently, including for every
+        /// rig spawned in later scenes. This app's content was authored WITH the offset
+        /// applied, so a zeroed offset parks the camera ~1.7m low, the rig capsule ends up
+        /// under the floor, and the player free-falls. Restoring the captured design value
+        /// keeps the app exactly as it behaved before the AR session existed.
+        /// </summary>
+        private void EnforceCameraOffset(Camera cam)
+        {
+            if (cam == null) return;
+            Transform offset = cam.transform.parent;
+            if (offset == null) return;
+
+            if (float.IsNaN(designCameraOffsetY))
+            {
+                designCameraOffsetY = offset.localPosition.y;
+                Debug.Log($"[VR Licensing] Camera offset baseline captured: {designCameraOffsetY:F2}m");
+                return;
+            }
+
+            Vector3 local = offset.localPosition;
+            if (Mathf.Abs(local.y - designCameraOffsetY) < 0.05f) return;
+
+            if (offsetWarnCooldown <= 0f)
+            {
+                Debug.LogWarning($"[VR Licensing] Camera offset drifted to {local.y:F2}m " +
+                                 $"(design {designCameraOffsetY:F2}m) — restoring. " +
+                                 "Likely the AR session re-ran the rig's floor calibration.");
+                offsetWarnCooldown = 5f;
+            }
+            offsetWarnCooldown -= Time.unscaledDeltaTime;
+
+            local.y = designCameraOffsetY;
+            offset.localPosition = local;
+        }
 
         private void SyncModality()
         {

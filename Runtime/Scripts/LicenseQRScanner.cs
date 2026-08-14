@@ -21,11 +21,11 @@ namespace VRLicensing
         private WebCamTexture m_Webcam;
         private Coroutine m_ScanRoutine;
 
-        // ZXing (reflection)
-        private object m_BarcodeReader;
-        private MethodInfo m_DecodeMethod;
-        private PropertyInfo m_ResultTextProp;
-        private bool m_ZxingResolved;
+        // ZXing — referenced directly: the package ships zxing.unity.dll, so there is no
+        // optional dependency to soften with reflection anymore. Direct usage also means
+        // the IL2CPP linker sees the assembly as used (reflection-only usage got it
+        // stripped from player builds, which silently killed scanning on device).
+        private ZXing.BarcodeReader m_BarcodeReader;
 
         /// <summary>True while a scan is in progress.</summary>
         public bool IsScanning { get; private set; }
@@ -157,42 +157,16 @@ namespace VRLicensing
 
         private bool TryResolveZXing()
         {
-            if (m_ZxingResolved) return m_BarcodeReader != null;
-            m_ZxingResolved = true;
+            if (m_BarcodeReader != null) return true;
 
             try
             {
-                Type readerType = null;
-                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-                {
-                    readerType = asm.GetType("ZXing.BarcodeReader");
-                    if (readerType != null) break;
-                }
-
-                if (readerType == null)
-                {
-                    Debug.LogWarning("[VR Licensing] ZXing not found. Add 'zxing.unity.dll' to the " +
-                        "project to enable QR scanning.");
-                    return false;
-                }
-
-                m_BarcodeReader = Activator.CreateInstance(readerType);
-                m_DecodeMethod = readerType.GetMethod("Decode",
-                    new[] { typeof(Color32[]), typeof(int), typeof(int) });
-
-                if (m_DecodeMethod == null)
-                {
-                    Debug.LogWarning("[VR Licensing] ZXing BarcodeReader.Decode(Color32[],int,int) not found.");
-                    m_BarcodeReader = null;
-                    return false;
-                }
-
+                m_BarcodeReader = new ZXing.BarcodeReader();
                 return true;
             }
             catch (Exception e)
             {
-                Debug.LogWarning($"[VR Licensing] Failed to resolve ZXing: {e.Message}");
-                m_BarcodeReader = null;
+                Debug.LogWarning($"[VR Licensing] Failed to create ZXing reader: {e.Message}");
                 return false;
             }
         }
@@ -201,13 +175,8 @@ namespace VRLicensing
         {
             try
             {
-                var result = m_DecodeMethod.Invoke(m_BarcodeReader, new object[] { pixels, width, height });
-                if (result == null) return null;
-
-                if (m_ResultTextProp == null)
-                    m_ResultTextProp = result.GetType().GetProperty("Text");
-
-                return m_ResultTextProp?.GetValue(result) as string;
+                var result = m_BarcodeReader.Decode(pixels, width, height);
+                return result?.Text;
             }
             catch (Exception e)
             {
