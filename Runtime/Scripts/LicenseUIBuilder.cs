@@ -871,6 +871,9 @@ namespace VRLicensing
                 onStatus: msg => SetScanStatus(msg, COLOR_TEXT_DIM),
                 onUnsupported: msg =>
                 {
+                    // Surface the exact reason in logcat — the UI status is easy to miss
+                    // and this is the only trace of WHY scanning got disabled.
+                    Debug.LogWarning("[VR Licensing] QR scan unsupported: " + msg);
                     scanWantsPassthrough = false;
                     qrSupported = false;
                     HideScanButtons(); // this headset can't scan — remove the option entirely
@@ -1625,6 +1628,27 @@ namespace VRLicensing
             SyncPassthrough(cam);
             SyncModality();
 
+            // Keep the tracking origin honest while the AR session exists (it lives for
+            // the whole app run), and emit a periodic breadcrumb of rig/camera heights so
+            // any future "player is falling" report can be diagnosed straight from logcat.
+            if (--originGuardIn <= 0)
+            {
+                originGuardIn = 30;
+                LicensePassthrough.GuardFloorOrigin();
+
+                if (--diagnosticsIn <= 0)
+                {
+                    diagnosticsIn = 4; // every ~4 guard ticks ≈ 1.7s at 72 fps
+                    if (cam != null)
+                    {
+                        Transform root = cam.transform.root;
+                        Debug.Log($"[VR Licensing] diag: rigY={root.position.y:F2} " +
+                                  $"camY={cam.transform.position.y:F2} camLocalY={cam.transform.localPosition.y:F2} " +
+                                  $"passthrough={passthroughActive} modal={(overlayPanel != null && overlayPanel.activeSelf)}");
+                    }
+                }
+            }
+
             // Main license modal: keep it in front of the player while visible so it
             // can't be turned away from and ignored.
             if (cam != null && overlayPanel != null && overlayPanel.activeSelf)
@@ -1779,6 +1803,8 @@ namespace VRLicensing
             new System.Collections.Generic.List<BaseRaycaster>();
         private bool modalityActive;
         private int modalityRescanIn;
+        private int originGuardIn;
+        private int diagnosticsIn;
 
         private void SyncModality()
         {

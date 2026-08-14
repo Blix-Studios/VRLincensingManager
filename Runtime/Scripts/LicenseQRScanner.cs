@@ -94,7 +94,12 @@ namespace VRLicensing
             }
 
             // 3. Camera device (empty on headsets without camera access, e.g. Quest 2)
-            if (WebCamTexture.devices == null || WebCamTexture.devices.Length == 0)
+            var devices = WebCamTexture.devices;
+            Debug.Log($"[VR Licensing] WebCamTexture devices: {(devices == null ? 0 : devices.Length)}" +
+                      (devices != null && devices.Length > 0
+                          ? " (" + string.Join(", ", System.Array.ConvertAll(devices, d => d.name)) + ")"
+                          : ""));
+            if (devices == null || devices.Length == 0)
             {
                 Cleanup();
                 onUnsupported?.Invoke("No camera available on this headset.");

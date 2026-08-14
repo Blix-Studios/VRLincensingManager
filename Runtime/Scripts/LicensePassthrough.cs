@@ -222,6 +222,33 @@ namespace VRLicensing
                 Borrow(t.gameObject);
         }
 
+        /// <summary>
+        /// Re-asserts Floor tracking origin. A running AR session on Meta OpenXR can flip
+        /// the input subsystem's origin from Floor to Device (AR convention: origin at the
+        /// headset), which drops the camera to y≈0; XRI then resizes the rig's capsule from
+        /// that pose, the capsule ends up below the floor, and the player falls forever.
+        /// Called periodically while the licensing system is alive — a no-op whenever the
+        /// origin is already Floor.
+        /// </summary>
+        public static void GuardFloorOrigin()
+        {
+            var subsystems = new List<UnityEngine.XR.XRInputSubsystem>();
+            SubsystemManager.GetSubsystems(subsystems);
+
+            foreach (var input in subsystems)
+            {
+                if (!input.running) continue;
+
+                var mode = input.GetTrackingOriginMode();
+                if ((mode & UnityEngine.XR.TrackingOriginModeFlags.Floor) != 0) continue;
+                if ((input.GetSupportedTrackingOriginModes() & UnityEngine.XR.TrackingOriginModeFlags.Floor) == 0) continue;
+
+                bool ok = input.TrySetTrackingOriginMode(UnityEngine.XR.TrackingOriginModeFlags.Floor);
+                Debug.LogWarning($"[VR Licensing] Tracking origin was {mode}; forcing Floor " +
+                                 $"({(ok ? "ok" : "FAILED")}). An active AR session likely changed it.");
+            }
+        }
+
         private static int PickRenderLayer()
         {
             // Search from the top so we stay clear of low user layers, which projects
