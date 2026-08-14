@@ -53,9 +53,40 @@ namespace VRLicensing
 
         private readonly Dictionary<GameObject, int> prevLayers = new Dictionary<GameObject, int>();
 
+        // Gravity is frozen while passthrough is up. Creating the AR session (and any
+        // other tracking hiccup) can momentarily invalidate the camera pose; XRI's
+        // gravity then shoves the rig's capsule below the floor and the player falls
+        // into the void forever. No gravity while gated → no fall, ever.
+        private readonly List<Behaviour> pausedGravity = new List<Behaviour>();
+        private Transform rigRoot;
+        private Vector3 rigPosAtEnable;
+
 #if HAS_AR_FOUNDATION
-        private GameObject sessionGo;               // created by us, destroyed on Disable
-        private ARCameraManager addedCameraManager; // added by us, removed on Disable
+        // One AR session for the whole app lifetime. Creating or destroying an ARSession
+        // RESTARTS the underlying OpenXR session (verified in logcat: a second "System
+        // Startup Completed" fires right after instantiation) — and a mid-experience
+        // restart is exactly the tracking hiccup described above. So the session is
+        // created once, marked DontDestroyOnLoad, and never torn down; passthrough is
+        // toggled purely by enabling/disabling the ARCameraManager.
+        private static GameObject sessionGo;
+        private ARCameraManager cameraManager;
+
+        /// <summary>
+        /// Creates the app-wide AR session if neither we nor the host app made one yet.
+        /// Called from the bootstrapper at app start so the one-and-only OpenXR session
+        /// restart happens at boot, before the player is in a scene where it matters.
+        /// </summary>
+        public static void EnsureSessionAlive()
+        {
+            if (sessionGo != null) return;
+            if (Object.FindFirstObjectByType<ARSession>() != null) return; // app owns one
+
+            sessionGo = new GameObject("VRLicensing ARSession");
+            Object.DontDestroyOnLoad(sessionGo);
+            sessionGo.AddComponent<ARSession>();
+        }
+#else
+        public static void EnsureSessionAlive() { }
 #endif
 
         /// <summary>
@@ -99,15 +130,27 @@ namespace VRLicensing
                 Borrow(go);
             }
 
-#if HAS_AR_FOUNDATION
-            if (Object.FindFirstObjectByType<ARSession>() == null)
+            // Freeze rig gravity for the duration (see field comment). Resolved by type
+            // name so the package works across XRI versions without a hard reference.
+            rigRoot = cam.transform.root;
+            rigPosAtEnable = rigRoot.position;
+            pausedGravity.Clear();
+            foreach (Behaviour b in rigRoot.GetComponentsInChildren<Behaviour>(true))
             {
-                sessionGo = new GameObject("VRLicensing ARSession (passthrough)");
-                sessionGo.AddComponent<ARSession>();
+                if (b != null && b.enabled && b.GetType().Name == "GravityProvider")
+                {
+                    b.enabled = false;
+                    pausedGravity.Add(b);
+                }
             }
 
-            if (cam.GetComponent<ARCameraManager>() == null)
-                addedCameraManager = cam.gameObject.AddComponent<ARCameraManager>();
+#if HAS_AR_FOUNDATION
+            EnsureSessionAlive();
+
+            cameraManager = cam.GetComponent<ARCameraManager>();
+            if (cameraManager == null)
+                cameraManager = cam.gameObject.AddComponent<ARCameraManager>();
+            cameraManager.enabled = true;
 #endif
         }
 
@@ -127,17 +170,28 @@ namespace VRLicensing
             IsActive = false;
 
 #if HAS_AR_FOUNDATION
-            if (addedCameraManager != null)
-            {
-                Object.Destroy(addedCameraManager);
-                addedCameraManager = null;
-            }
-            if (sessionGo != null)
-            {
-                Object.Destroy(sessionGo);
-                sessionGo = null;
-            }
+            // Only the camera manager toggles off — the AR session stays alive for the
+            // whole app run so the OpenXR session never restarts mid-experience.
+            if (cameraManager != null)
+                cameraManager.enabled = false;
 #endif
+
+            foreach (Behaviour b in pausedGravity)
+            {
+                if (b != null) b.enabled = true;
+            }
+            pausedGravity.Clear();
+
+            // Safety net: if some missed mechanism still dragged the rig down while the
+            // modal was up, put the player back where they were. One silent teleport
+            // beats an endless fall.
+            if (rigRoot != null && rigPosAtEnable.y - rigRoot.position.y > 1f)
+            {
+                Debug.LogWarning($"[VR Licensing] Rig dropped {rigPosAtEnable.y - rigRoot.position.y:F1}m " +
+                                 "while the license UI was open — restoring its position.");
+                rigRoot.position = rigPosAtEnable;
+            }
+            rigRoot = null;
 
             foreach (var pair in prevLayers)
             {

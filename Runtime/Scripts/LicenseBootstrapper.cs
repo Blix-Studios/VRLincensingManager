@@ -25,7 +25,15 @@ namespace VRLicensing
                 return;
             }
 
-            // 3. Instantiate the license system
+            // 3. Pre-warm the AR session at boot. Creating an ARSession restarts the
+            // OpenXR session; doing it here — before any scene is playing — makes that
+            // one restart harmless. If it happened lazily when the license modal first
+            // opens, the restart's tracking hiccup could let gravity push the player
+            // through the floor.
+            if (config.usePassthroughBackground)
+                LicensePassthrough.EnsureSessionAlive();
+
+            // 4. Instantiate the license system
             var prefab = Resources.Load<GameObject>("LicenseGateUI");
             if (prefab != null)
             {
