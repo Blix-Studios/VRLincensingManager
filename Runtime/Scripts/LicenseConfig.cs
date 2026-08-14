@@ -30,6 +30,14 @@ namespace VRLicensing
         [Tooltip("Visible simulator name (displayed in the licensing UI)")]
         public string appDisplayName = "VR Simulator";
 
+        [Header("License UI")]
+        [Tooltip("While the license UI is open, show camera passthrough instead of the game " +
+                 "scene (WhatsApp-style device linking), so the user can read a license key " +
+                 "from their phone or a printed card without taking the headset off. Requires " +
+                 "the 'Meta Quest: Camera (Passthrough)' OpenXR feature to be enabled in " +
+                 "XR Plug-in Management; falls back to a plain dark background when unavailable.")]
+        public bool usePassthroughBackground = true;
+
         [Header("Purchase Call-To-Action")]
         [Tooltip("Store URL shown (as text and as a QR code) when the demo runs out. " +
                  "Keep it short — shorter URLs produce a lower-density QR that is easier " +

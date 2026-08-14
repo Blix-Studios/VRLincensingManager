@@ -1,0 +1,9 @@
+<linker>
+  <!--
+    The license QR scanner resolves ZXing purely via reflection (no static
+    references), so IL2CPP managed stripping sees the assembly as unused and
+    removes it from the player build. Preserve it explicitly or "Scan QR"
+    silently reports unsupported on device.
+  -->
+  <assembly fullname="zxing.unity" preserve="all" />
+</linker>

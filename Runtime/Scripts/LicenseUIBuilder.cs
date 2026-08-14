@@ -15,7 +15,11 @@ namespace VRLicensing
     public class LicenseUIBuilder : MonoBehaviour
     {
         // ─────────────────────── Design Constants ───────────────────────
-        private const float CANVAS_SCALE = 0.001f;
+        // Modal scale sized for readability from 2m in-headset: at 0.0018 the 1000px canvas
+        // spans ~1.8m (~48° of view), comparable to HorizonOS system dialogs. The original
+        // 0.001 was legible on a monitor but far too small through lenses.
+        private const float CANVAS_SCALE = 0.0018f;
+        private const float HUD_SCALE = 0.001f; // demo HUD keeps its compact size
         private const float CANVAS_DISTANCE = 2.0f;
         // Wide enough to hold the two-column "Demo Expired" panel (900px) with margin.
         // Panels are not clipped by the overlay, so anything wider would visibly spill
@@ -83,6 +87,11 @@ namespace VRLicensing
 
         // Runtime-generated purchase QR — released in OnDestroy (textures are not GC'd).
         private Texture2D purchaseQrTexture;
+
+        // WhatsApp-style passthrough background while the license modal is open.
+        private readonly LicensePassthrough passthrough = new LicensePassthrough();
+        private bool passthroughActive;
+        private Image overlayImage;
         private Camera hudCam;
 
         // QR scanning (Quest 3/3S camera access; buttons hidden on unsupported headsets)
@@ -302,8 +311,23 @@ namespace VRLicensing
             BuildSuccessPanel();
             BuildDemoTimer();
 
+            // Everything the license system renders lives on the UI layer, so the camera
+            // can cull down to just this UI while passthrough is showing the real room.
+            SetLayerRecursively(canvas.gameObject, LicensePassthrough.UiLayer);
+            if (demoTimerCanvas != null)
+                SetLayerRecursively(demoTimerCanvas.gameObject, LicensePassthrough.UiLayer);
+
+            overlayImage = overlayPanel.GetComponent<Image>();
+
             // Start hidden
             overlayPanel.SetActive(false);
+        }
+
+        private static void SetLayerRecursively(GameObject go, int layer)
+        {
+            go.layer = layer;
+            foreach (Transform child in go.transform)
+                SetLayerRecursively(child.gameObject, layer);
         }
 
         private void BuildCanvas()
@@ -1743,7 +1767,7 @@ namespace VRLicensing
 
             var crt = canvasGo.GetComponent<RectTransform>();
             crt.sizeDelta = new Vector2(340, 54);
-            canvasGo.transform.localScale = Vector3.one * CANVAS_SCALE;
+            canvasGo.transform.localScale = Vector3.one * HUD_SCALE;
 
             // Background bar (fills the canvas)
             demoTimerPanel = CreatePanel("DemoTimerHUD", crt, new Color(0.06f, 0.07f, 0.10f, 0.85f), stretch: true);
@@ -1785,6 +1809,8 @@ namespace VRLicensing
         private void Update()
         {
             var cam = ResolveHudCam();
+
+            SyncPassthrough(cam);
 
             // Main license modal: keep it in front of the player while visible so it
             // can't be turned away from and ignored.
@@ -1868,11 +1894,84 @@ namespace VRLicensing
 
         private void OnDestroy()
         {
+            if (passthroughActive)
+            {
+                passthrough.Disable();
+                passthroughActive = false;
+            }
+
             if (purchaseQrTexture != null)
             {
                 Destroy(purchaseQrTexture);
                 purchaseQrTexture = null;
             }
+        }
+
+        /// <summary>
+        /// Keeps passthrough in lockstep with modal visibility: the real room fades in
+        /// whenever the license UI is open (so the user can read a key off their phone,
+        /// WhatsApp-linking style) and the game scene comes back the moment it closes.
+        /// Driven from Update so every Show/Hide path is covered by a single mechanism.
+        /// </summary>
+        private void SyncPassthrough(Camera cam)
+        {
+            bool want = config != null && config.usePassthroughBackground
+                        && overlayPanel != null && overlayPanel.activeSelf
+                        && cam != null;
+
+            // The XRI spatial keyboard spawns lazily OUTSIDE the rig hierarchy the first
+            // time a field is focused, so it must be pulled onto the UI layer while the
+            // camera is culling everything else — otherwise the user types blind.
+            if (passthroughActive)
+                EnsureKeyboardOnUiLayer();
+
+            if (want == passthroughActive) return;
+
+            if (want)
+            {
+                passthrough.Enable(cam);
+                // Drop the dark backdrop: the room itself is the background now. The image
+                // stays enabled so it keeps blocking clicks on whatever is behind the modal.
+                if (overlayImage != null) overlayImage.color = new Color(0f, 0f, 0f, 0f);
+            }
+            else
+            {
+                passthrough.Disable();
+                if (overlayImage != null) overlayImage.color = COLOR_BG_OVERLAY;
+            }
+
+            passthroughActive = want;
+        }
+
+        private Type globalKeyboardType;
+        private System.Reflection.PropertyInfo globalKeyboardInstanceProp;
+
+        /// <summary>
+        /// Moves the global XRI spatial keyboard onto the UI layer (once it exists) so it
+        /// stays visible while passthrough narrows the camera to UI-only. Leaving it on
+        /// the UI layer afterwards is harmless — it renders normally either way.
+        /// </summary>
+        private void EnsureKeyboardOnUiLayer()
+        {
+            if (globalKeyboardType == null)
+            {
+                globalKeyboardType = Type.GetType(
+                    "UnityEngine.XR.Interaction.Toolkit.Samples.SpatialKeyboard.GlobalNonNativeKeyboard, " +
+                    "Unity.XR.Interaction.Toolkit.Samples.SpatialKeyboard");
+                if (globalKeyboardType == null) return; // sample not imported — nothing to do
+
+                globalKeyboardInstanceProp = globalKeyboardType.GetProperty("instance",
+                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
+            }
+
+            if (globalKeyboardInstanceProp == null) return;
+
+            var instance = globalKeyboardInstanceProp.GetValue(null) as MonoBehaviour;
+            if (instance == null) return;
+
+            GameObject root = instance.transform.root.gameObject;
+            if (root.layer != LicensePassthrough.UiLayer)
+                SetLayerRecursively(root, LicensePassthrough.UiLayer);
         }
 
         /// <summary>

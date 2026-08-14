@@ -2,7 +2,8 @@
     "name": "VRLicensing.Runtime",
     "rootNamespace": "VRLicensing",
     "references": [
-        "Unity.TextMeshPro"
+        "Unity.TextMeshPro",
+        "Unity.XR.ARFoundation"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

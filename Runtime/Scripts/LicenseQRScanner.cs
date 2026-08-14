@@ -56,21 +56,27 @@ namespace VRLicensing
         {
             IsScanning = true;
 
-            // 1. Camera permission (Android only)
+            // 1. Camera permissions (Android only). HorizonOS v74+ gates the passthrough
+            // camera behind BOTH android.permission.CAMERA and its own HEADSET_CAMERA
+            // permission, and pre-grants the latter only until the app explicitly asks
+            // (REVOKE_WHEN_REQUESTED) — so request both, every time.
 #if UNITY_ANDROID && !UNITY_EDITOR
-            if (!Permission.HasUserAuthorizedPermission(Permission.Camera))
+            string[] required = { Permission.Camera, "horizonos.permission.HEADSET_CAMERA" };
+            foreach (string permission in required)
             {
+                if (Permission.HasUserAuthorizedPermission(permission)) continue;
+
                 onStatus?.Invoke("Requesting camera permission...");
-                Permission.RequestUserPermission(Permission.Camera);
+                Permission.RequestUserPermission(permission);
 
                 float waited = 0f;
-                while (!Permission.HasUserAuthorizedPermission(Permission.Camera) && waited < 20f)
+                while (!Permission.HasUserAuthorizedPermission(permission) && waited < 20f)
                 {
                     waited += Time.unscaledDeltaTime;
                     yield return null;
                 }
 
-                if (!Permission.HasUserAuthorizedPermission(Permission.Camera))
+                if (!Permission.HasUserAuthorizedPermission(permission))
                 {
                     Cleanup();
                     onUnsupported?.Invoke("Camera permission denied.");
