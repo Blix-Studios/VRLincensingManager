@@ -312,11 +312,13 @@ namespace VRLicensing
             BuildSuccessPanel();
             BuildDemoTimer();
 
-            // Everything the license system renders lives on the UI layer, so the camera
-            // can cull down to just this UI while passthrough is showing the real room.
-            SetLayerRecursively(canvas.gameObject, LicensePassthrough.UiLayer);
+            // Idiomatic UI layer for normal rendering. While passthrough is active the
+            // hierarchy is borrowed onto a dedicated render layer instead (see
+            // LicensePassthrough) — the built-in UI layer can't be used for that because
+            // every game canvas defaults to it too.
+            SetLayerRecursively(canvas.gameObject, 5);
             if (demoTimerCanvas != null)
-                SetLayerRecursively(demoTimerCanvas.gameObject, LicensePassthrough.UiLayer);
+                SetLayerRecursively(demoTimerCanvas.gameObject, 5);
 
             overlayImage = overlayPanel.GetComponent<Image>();
 
@@ -1621,6 +1623,7 @@ namespace VRLicensing
             var cam = ResolveHudCam();
 
             SyncPassthrough(cam);
+            SyncModality();
 
             // Main license modal: keep it in front of the player while visible so it
             // can't be turned away from and ignored.
@@ -1710,6 +1713,13 @@ namespace VRLicensing
                 passthroughActive = false;
             }
 
+            // Never leave the game's raycasters disabled behind us.
+            foreach (var rc in suppressedRaycasters)
+            {
+                if (rc != null) rc.enabled = true;
+            }
+            suppressedRaycasters.Clear();
+
             if (purchaseQrTexture != null)
             {
                 Destroy(purchaseQrTexture);
@@ -1730,16 +1740,22 @@ namespace VRLicensing
             bool want = cam != null && modalOpen && (wantBackground || scanWantsPassthrough);
 
             // The XRI spatial keyboard spawns lazily OUTSIDE the rig hierarchy the first
-            // time a field is focused, so it must be pulled onto the UI layer while the
-            // camera is culling everything else — otherwise the user types blind.
+            // time a field is focused, so it must be pulled onto the render layer while
+            // the camera is culling everything else — otherwise the user types blind.
             if (passthroughActive)
-                EnsureKeyboardOnUiLayer();
+            {
+                GameObject kb = FindKeyboardRoot();
+                if (kb != null) passthrough.BorrowLateHierarchy(kb);
+            }
 
             if (want == passthroughActive) return;
 
             if (want)
             {
-                passthrough.Enable(cam);
+                passthrough.Enable(cam,
+                    canvas != null ? canvas.gameObject : null,
+                    demoTimerCanvas != null ? demoTimerCanvas.gameObject : null,
+                    FindKeyboardRoot());
                 // Drop the dark backdrop: the room itself is the background now. The image
                 // stays enabled so it keeps blocking clicks on whatever is behind the modal.
                 if (overlayImage != null) overlayImage.color = new Color(0f, 0f, 0f, 0f);
@@ -1753,35 +1769,81 @@ namespace VRLicensing
             passthroughActive = want;
         }
 
+        // ─────────────────── Gate Modality ───────────────────
+        // While the license modal is open, every raycaster that doesn't belong to the
+        // license UI or the spatial keyboard is disabled, so the game's own menus can't
+        // be clicked "through" the gate (with passthrough hiding them, a user could
+        // otherwise press their buttons blind — and did).
+
+        private readonly System.Collections.Generic.List<BaseRaycaster> suppressedRaycasters =
+            new System.Collections.Generic.List<BaseRaycaster>();
+        private bool modalityActive;
+        private int modalityRescanIn;
+
+        private void SyncModality()
+        {
+            bool modalOpen = overlayPanel != null && overlayPanel.activeSelf;
+
+            if (modalOpen)
+            {
+                // Rescan periodically: scene loads and late-spawned canvases can bring
+                // new raycasters into play while the gate is up.
+                if (!modalityActive || --modalityRescanIn <= 0)
+                {
+                    SuppressForeignRaycasters();
+                    modalityRescanIn = 60;
+                }
+                modalityActive = true;
+            }
+            else if (modalityActive)
+            {
+                foreach (var rc in suppressedRaycasters)
+                {
+                    if (rc != null) rc.enabled = true;
+                }
+                suppressedRaycasters.Clear();
+                modalityActive = false;
+            }
+        }
+
+        private void SuppressForeignRaycasters()
+        {
+            GameObject keyboardRoot = FindKeyboardRoot();
+
+            foreach (var rc in FindObjectsByType<BaseRaycaster>(FindObjectsSortMode.None))
+            {
+                if (!rc.enabled) continue;
+                if (rc.GetComponentInParent<LicenseUIBuilder>() != null) continue; // ours
+                if (keyboardRoot != null && rc.transform.root.gameObject == keyboardRoot) continue;
+
+                rc.enabled = false;
+                suppressedRaycasters.Add(rc);
+            }
+        }
+
         private Type globalKeyboardType;
         private System.Reflection.PropertyInfo globalKeyboardInstanceProp;
 
         /// <summary>
-        /// Moves the global XRI spatial keyboard onto the UI layer (once it exists) so it
-        /// stays visible while passthrough narrows the camera to UI-only. Leaving it on
-        /// the UI layer afterwards is harmless — it renders normally either way.
+        /// Root of the global XRI spatial keyboard, or null while it hasn't spawned yet
+        /// (it is created lazily the first time an input field gains focus). Resolved via
+        /// reflection so the package has no hard dependency on the XRI sample.
         /// </summary>
-        private void EnsureKeyboardOnUiLayer()
+        private GameObject FindKeyboardRoot()
         {
             if (globalKeyboardType == null)
             {
                 globalKeyboardType = Type.GetType(
                     "UnityEngine.XR.Interaction.Toolkit.Samples.SpatialKeyboard.GlobalNonNativeKeyboard, " +
                     "Unity.XR.Interaction.Toolkit.Samples.SpatialKeyboard");
-                if (globalKeyboardType == null) return; // sample not imported — nothing to do
+                if (globalKeyboardType == null) return null; // sample not imported
 
                 globalKeyboardInstanceProp = globalKeyboardType.GetProperty("instance",
                     System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
             }
 
-            if (globalKeyboardInstanceProp == null) return;
-
-            var instance = globalKeyboardInstanceProp.GetValue(null) as MonoBehaviour;
-            if (instance == null) return;
-
-            GameObject root = instance.transform.root.gameObject;
-            if (root.layer != LicensePassthrough.UiLayer)
-                SetLayerRecursively(root, LicensePassthrough.UiLayer);
+            var instance = globalKeyboardInstanceProp?.GetValue(null) as MonoBehaviour;
+            return instance != null ? instance.transform.root.gameObject : null;
         }
 
         /// <summary>
