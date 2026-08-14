@@ -89,8 +89,11 @@ namespace VRLicensing
         private Texture2D purchaseQrTexture;
 
         // WhatsApp-style passthrough background while the license modal is open.
+        // Also serves the QR scan flow: while scanning, passthrough turns on even if
+        // config.usePassthroughBackground is off, so the user can aim at a physical code.
         private readonly LicensePassthrough passthrough = new LicensePassthrough();
         private bool passthroughActive;
+        private bool scanWantsPassthrough;
         private Image overlayImage;
         private Camera hudCam;
 
@@ -118,13 +121,6 @@ namespace VRLicensing
         private LicenseManager manager;
         private bool isPositioned;
         private Component lazyFollowInstance;
-
-        // ─────────────────── Passthrough State ───────────────────
-        private bool passthroughActive;
-        private CameraClearFlags savedClearFlags;
-        private Color savedBackgroundColor;
-        private bool savedCameraState;
-        private Component arCameraManagerInstance;
 
         // ─────────────────── XR Keyboard Cache ───────────────────
         private Type xrKeyboardDisplayType;
@@ -214,6 +210,11 @@ namespace VRLicensing
         public void HideAll()
         {
             overlayPanel.SetActive(false);
+            // A scan interrupted by the modal closing must not leave passthrough
+            // armed for the next time the UI opens.
+            scanWantsPassthrough = false;
+            if (qrScanner != null && qrScanner.IsScanning)
+                qrScanner.StopScan();
         }
 
         /// <summary>
@@ -846,7 +847,7 @@ namespace VRLicensing
             if (qrScanner != null && qrScanner.IsScanning)
             {
                 qrScanner.StopScan();
-                DisablePassthrough();
+                scanWantsPassthrough = false;
                 SetScanStatus("Scan cancelled.", COLOR_TEXT_DIM);
                 return;
             }
@@ -854,19 +855,21 @@ namespace VRLicensing
             if (qrScanner == null)
                 qrScanner = gameObject.AddComponent<LicenseQRScanner>();
 
-            EnablePassthrough();
+            // SyncPassthrough picks this up next frame and shows the room so the
+            // user can aim the headset at the physical code.
+            scanWantsPassthrough = true;
             SetScanStatus("Starting camera...", COLOR_TEXT_DIM);
 
             qrScanner.StartScan(30f,
                 onDecoded: key =>
                 {
-                    DisablePassthrough();
+                    scanWantsPassthrough = false;
                     OnQRDecoded(key);
                 },
                 onStatus: msg => SetScanStatus(msg, COLOR_TEXT_DIM),
                 onUnsupported: msg =>
                 {
-                    DisablePassthrough();
+                    scanWantsPassthrough = false;
                     qrSupported = false;
                     HideScanButtons(); // this headset can't scan — remove the option entirely
                     SetScanStatus(msg + " Enter your key manually.", COLOR_ERROR);
@@ -954,199 +957,6 @@ namespace VRLicensing
                     ShowError(error ?? "Error validating the license.");
                 }
             });
-        }
-
-        // ─────────────────── Passthrough ───────────────────
-
-        /// <summary>
-        /// Toggles passthrough via reflection. Supports two strategies:
-        /// 1. AR Foundation (OpenXR) — Uses ARCameraManager (preferred, works with com.unity.xr.meta-openxr)
-        /// 2. OVR SDK (Legacy) — Uses OVRManager + OVRPassthroughLayer (fallback for legacy Meta SDK)
-        /// </summary>
-        private void TogglePassthrough()
-        {
-            passthroughActive = !passthroughActive;
-
-            if (passthroughActive)
-                EnablePassthrough();
-            else
-                DisablePassthrough();
-        }
-
-        private void EnablePassthrough()
-        {
-            var cam = Camera.main;
-            if (cam == null)
-            {
-                Debug.LogWarning("[VR Licensing] No main camera found for passthrough.");
-                return;
-            }
-
-            // Save original camera state for restoration
-            savedClearFlags = cam.clearFlags;
-            savedBackgroundColor = cam.backgroundColor;
-            savedCameraState = true;
-
-            // Strategy A: AR Foundation (OpenXR path)
-            if (TryEnableARFoundationPassthrough(cam))
-            {
-                ConfigureCameraForPassthrough(cam);
-                Debug.Log("[VR Licensing] Passthrough enabled via AR Foundation (OpenXR).");
-                return;
-            }
-
-            // Strategy B: OVR SDK (Legacy path)
-            if (TryEnableOVRPassthrough())
-            {
-                ConfigureCameraForPassthrough(cam);
-                Debug.Log("[VR Licensing] Passthrough enabled via OVR SDK (Legacy).");
-                return;
-            }
-
-            // No passthrough available
-            passthroughActive = false;
-            Debug.LogWarning("[VR Licensing] Passthrough no disponible. " +
-                "Necesitas AR Foundation (com.unity.xr.arfoundation) con OpenXR Meta, " +
-                "o Meta XR SDK (OVRManager) para activar passthrough.");
-        }
-
-        private void DisablePassthrough()
-        {
-            var cam = Camera.main;
-
-            // Disable ARCameraManager if we added/enabled it
-            if (arCameraManagerInstance != null)
-            {
-                var enabledProp = arCameraManagerInstance.GetType().GetProperty("enabled",
-                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
-                if (enabledProp != null)
-                    enabledProp.SetValue(arCameraManagerInstance, false);
-
-                Debug.Log("[VR Licensing] ARCameraManager disabled.");
-            }
-
-            // Disable OVR passthrough if it was enabled
-            TryDisableOVRPassthrough();
-
-            // Restore camera state
-            if (cam != null && savedCameraState)
-            {
-                cam.clearFlags = savedClearFlags;
-                cam.backgroundColor = savedBackgroundColor;
-            }
-
-            Debug.Log("[VR Licensing] Passthrough disabled.");
-        }
-
-        /// <summary>
-        /// Strategy A: Enable passthrough via ARCameraManager (AR Foundation / OpenXR).
-        /// </summary>
-        private bool TryEnableARFoundationPassthrough(Camera cam)
-        {
-            var arCamManagerType = Type.GetType(
-                "UnityEngine.XR.ARFoundation.ARCameraManager, Unity.XR.ARFoundation");
-
-            if (arCamManagerType == null)
-                return false;
-
-            // Check if ARCameraManager already exists on the camera
-            arCameraManagerInstance = cam.GetComponent(arCamManagerType);
-
-            if (arCameraManagerInstance == null)
-            {
-                // Add ARCameraManager to the camera
-                arCameraManagerInstance = cam.gameObject.AddComponent(arCamManagerType);
-                Debug.Log("[VR Licensing] ARCameraManager added to main camera.");
-            }
-            else
-            {
-                // Enable existing ARCameraManager
-                var enabledProp = arCamManagerType.GetProperty("enabled",
-                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
-                if (enabledProp != null)
-                    enabledProp.SetValue(arCameraManagerInstance, true);
-            }
-
-            return true;
-        }
-
-        /// <summary>
-        /// Strategy B: Enable passthrough via OVRManager + OVRPassthroughLayer (Legacy Meta SDK).
-        /// </summary>
-        private bool TryEnableOVRPassthrough()
-        {
-            var ovrManagerType = Type.GetType("OVRManager, Oculus.VR");
-            if (ovrManagerType == null)
-                return false;
-
-            var instanceProp = ovrManagerType.GetProperty("instance",
-                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
-            if (instanceProp == null)
-                return false;
-
-            var instance = instanceProp.GetValue(null);
-            if (instance == null)
-                return false;
-
-            // Enable passthrough on OVRManager
-            var passthroughField = ovrManagerType.GetField("isInsightPassthroughEnabled");
-            if (passthroughField != null)
-                passthroughField.SetValue(instance, true);
-
-            // Find or create OVRPassthroughLayer
-            var ovrPassthroughType = Type.GetType("OVRPassthroughLayer, Oculus.VR");
-            if (ovrPassthroughType != null)
-            {
-                var existingLayer = FindObjectOfType(ovrPassthroughType);
-                if (existingLayer == null)
-                {
-                    var ptGo = new GameObject("[VR Licensing] PassthroughLayer");
-                    ptGo.AddComponent(ovrPassthroughType);
-                    Debug.Log("[VR Licensing] OVRPassthroughLayer created.");
-                }
-                else
-                {
-                    // Enable existing layer
-                    var enabledProp2 = ovrPassthroughType.GetProperty("enabled",
-                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
-                    if (enabledProp2 != null)
-                        enabledProp2.SetValue(existingLayer, true);
-                }
-            }
-
-            return true;
-        }
-
-        /// <summary>
-        /// Disables OVR passthrough if it was previously enabled.
-        /// </summary>
-        private void TryDisableOVRPassthrough()
-        {
-            var ovrManagerType = Type.GetType("OVRManager, Oculus.VR");
-            if (ovrManagerType == null)
-                return;
-
-            var instanceProp = ovrManagerType.GetProperty("instance",
-                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
-            if (instanceProp == null)
-                return;
-
-            var instance = instanceProp.GetValue(null);
-            if (instance == null)
-                return;
-
-            var passthroughField = ovrManagerType.GetField("isInsightPassthroughEnabled");
-            if (passthroughField != null)
-                passthroughField.SetValue(instance, false);
-        }
-
-        /// <summary>
-        /// Configures camera for passthrough rendering (solid color with alpha 0).
-        /// </summary>
-        private void ConfigureCameraForPassthrough(Camera cam)
-        {
-            cam.clearFlags = CameraClearFlags.SolidColor;
-            cam.backgroundColor = new Color(0f, 0f, 0f, 0f);
         }
 
         // ─────────────────── LazyFollow ───────────────────
@@ -1915,9 +1725,9 @@ namespace VRLicensing
         /// </summary>
         private void SyncPassthrough(Camera cam)
         {
-            bool want = config != null && config.usePassthroughBackground
-                        && overlayPanel != null && overlayPanel.activeSelf
-                        && cam != null;
+            bool modalOpen = overlayPanel != null && overlayPanel.activeSelf;
+            bool wantBackground = config != null && config.usePassthroughBackground;
+            bool want = cam != null && modalOpen && (wantBackground || scanWantsPassthrough);
 
             // The XRI spatial keyboard spawns lazily OUTSIDE the rig hierarchy the first
             // time a field is focused, so it must be pulled onto the UI layer while the
