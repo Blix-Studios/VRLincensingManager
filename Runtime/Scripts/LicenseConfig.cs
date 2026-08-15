@@ -31,12 +31,15 @@ namespace VRLicensing
         public string appDisplayName = "VR Simulator";
 
         [Header("License UI")]
-        [Tooltip("While the license UI is open, show camera passthrough instead of the game " +
-                 "scene (WhatsApp-style device linking), so the user can read a license key " +
-                 "from their phone or a printed card without taking the headset off. Requires " +
-                 "the 'Meta Quest: Camera (Passthrough)' OpenXR feature to be enabled in " +
-                 "XR Plug-in Management; falls back to a plain dark background when unavailable.")]
-        public bool usePassthroughBackground = true;
+        [Tooltip("OPT-IN. While the license UI is open, show camera passthrough instead of the " +
+                 "game scene (WhatsApp-style device linking). Requires the 'Meta Quest: Session' " +
+                 "and 'Meta Quest: Camera (Passthrough)' OpenXR features, AND a rig authored in " +
+                 "proper Floor tracking mode. WARNING: starting the AR camera subsystem makes the " +
+                 "XR Origin re-run its floor calibration and zero its camera Y offset — in apps " +
+                 "whose content was authored with that offset applied, this drops the player " +
+                 "through the floor. Leave OFF unless the rig is verified floor-mode. QR scanning " +
+                 "does NOT need this: it uses an in-panel camera viewfinder instead.")]
+        public bool usePassthroughBackground = false;
 
         [Header("Purchase Call-To-Action")]
         [Tooltip("Store URL shown (as text and as a QR code) when the demo runs out. " +

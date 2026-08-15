@@ -31,6 +31,12 @@ namespace VRLicensing
         public bool IsScanning { get; private set; }
 
         /// <summary>
+        /// The live camera feed while scanning (null otherwise). The UI shows this in a
+        /// viewfinder so the user can aim — WebCamTexture needs no AR/passthrough at all.
+        /// </summary>
+        public WebCamTexture CameraTexture => m_Webcam;
+
+        /// <summary>
         /// Starts scanning. Exactly one of the callbacks fires per scan session.
         /// </summary>
         /// <param name="timeoutSeconds">Give up after this many seconds without a hit.</param>

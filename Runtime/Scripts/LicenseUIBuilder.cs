@@ -88,13 +88,18 @@ namespace VRLicensing
         // Runtime-generated purchase QR — released in OnDestroy (textures are not GC'd).
         private Texture2D purchaseQrTexture;
 
-        // WhatsApp-style passthrough background while the license modal is open.
-        // Also serves the QR scan flow: while scanning, passthrough turns on even if
-        // config.usePassthroughBackground is off, so the user can aim at a physical code.
+        // Opt-in WhatsApp-style passthrough background while the license modal is open.
+        // The QR scan flow deliberately does NOT use it: it renders the WebCamTexture in
+        // an in-panel viewfinder instead, which needs no AR subsystem (starting the AR
+        // camera makes the XR Origin re-run floor calibration, which breaks rigs authored
+        // against an applied camera offset — measured on device as a fall through the floor).
         private readonly LicensePassthrough passthrough = new LicensePassthrough();
         private bool passthroughActive;
-        private bool scanWantsPassthrough;
         private Image overlayImage;
+
+        // QR viewfinder — shows the camera feed while scanning so the user can aim.
+        private GameObject viewfinderPanel;
+        private RawImage viewfinderImage;
         private Camera hudCam;
 
         // QR scanning (Quest 3/3S camera access; buttons hidden on unsupported headsets)
@@ -210,9 +215,6 @@ namespace VRLicensing
         public void HideAll()
         {
             overlayPanel.SetActive(false);
-            // A scan interrupted by the modal closing must not leave passthrough
-            // armed for the next time the UI opens.
-            scanWantsPassthrough = false;
             if (qrScanner != null && qrScanner.IsScanning)
                 qrScanner.StopScan();
         }
@@ -322,8 +324,65 @@ namespace VRLicensing
 
             overlayImage = overlayPanel.GetComponent<Image>();
 
+            BuildViewfinder();
+
             // Start hidden
             overlayPanel.SetActive(false);
+        }
+
+        /// <summary>
+        /// Floating camera viewfinder shown while a QR scan runs. Built last so it renders
+        /// above whichever panel started the scan.
+        /// </summary>
+        private void BuildViewfinder()
+        {
+            var overlayRt = overlayPanel.GetComponent<RectTransform>();
+
+            viewfinderPanel = CreatePanel("QrViewfinder", overlayRt, COLOR_PANEL_BG);
+            var rt = viewfinderPanel.GetComponent<RectTransform>();
+            rt.anchorMin = new Vector2(0.5f, 0.5f);
+            rt.anchorMax = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta = new Vector2(380, 330);
+            rt.anchoredPosition = new Vector2(0, -20);
+
+            CreateTMPText("VfTitle", rt,
+                "Point at the QR code",
+                16, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
+                size: new Vector2(360, 28), pos: new Vector2(0, -10));
+
+            var imgGo = new GameObject("VfImage");
+            imgGo.transform.SetParent(rt, false);
+            viewfinderImage = imgGo.AddComponent<RawImage>();
+            viewfinderImage.color = Color.white;
+            viewfinderImage.raycastTarget = false;
+            var imgRt = viewfinderImage.rectTransform;
+            imgRt.anchorMin = new Vector2(0.5f, 0.5f);
+            imgRt.anchorMax = new Vector2(0.5f, 0.5f);
+            imgRt.sizeDelta = new Vector2(340, 240);
+            imgRt.anchoredPosition = new Vector2(0, 5);
+
+            CreateTMPText("VfHint", rt,
+                "Press Scan QR again to cancel",
+                11, FontStyles.Italic, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 0f), pivot: new Vector2(0.5f, 0f),
+                size: new Vector2(360, 22), pos: new Vector2(0, 8));
+
+            viewfinderPanel.SetActive(false);
+        }
+
+        /// <summary>Keeps the viewfinder bound to the live camera feed and auto-hides it.</summary>
+        private void SyncViewfinder()
+        {
+            if (viewfinderPanel == null) return;
+
+            bool scanning = qrScanner != null && qrScanner.IsScanning;
+
+            if (viewfinderPanel.activeSelf != scanning)
+                viewfinderPanel.SetActive(scanning);
+
+            if (scanning)
+                viewfinderImage.texture = qrScanner.CameraTexture; // null until the camera starts
         }
 
         private static void SetLayerRecursively(GameObject go, int layer)
@@ -849,7 +908,6 @@ namespace VRLicensing
             if (qrScanner != null && qrScanner.IsScanning)
             {
                 qrScanner.StopScan();
-                scanWantsPassthrough = false;
                 SetScanStatus("Scan cancelled.", COLOR_TEXT_DIM);
                 return;
             }
@@ -857,24 +915,18 @@ namespace VRLicensing
             if (qrScanner == null)
                 qrScanner = gameObject.AddComponent<LicenseQRScanner>();
 
-            // SyncPassthrough picks this up next frame and shows the room so the
-            // user can aim the headset at the physical code.
-            scanWantsPassthrough = true;
+            // The in-panel viewfinder (SyncViewfinder) gives the user the camera feed to
+            // aim with — no passthrough involved.
             SetScanStatus("Starting camera...", COLOR_TEXT_DIM);
 
             qrScanner.StartScan(30f,
-                onDecoded: key =>
-                {
-                    scanWantsPassthrough = false;
-                    OnQRDecoded(key);
-                },
+                onDecoded: OnQRDecoded,
                 onStatus: msg => SetScanStatus(msg, COLOR_TEXT_DIM),
                 onUnsupported: msg =>
                 {
                     // Surface the exact reason in logcat — the UI status is easy to miss
                     // and this is the only trace of WHY scanning got disabled.
                     Debug.LogWarning("[VR Licensing] QR scan unsupported: " + msg);
-                    scanWantsPassthrough = false;
                     qrSupported = false;
                     HideScanButtons(); // this headset can't scan — remove the option entirely
                     SetScanStatus(msg + " Enter your key manually.", COLOR_ERROR);
@@ -1628,6 +1680,7 @@ namespace VRLicensing
             EnforceCameraOffset(cam);
             SyncPassthrough(cam);
             SyncModality();
+            SyncViewfinder();
 
             // Keep the tracking origin honest while the AR session exists (it lives for
             // the whole app run), and emit a periodic breadcrumb of rig/camera heights so
@@ -1762,7 +1815,7 @@ namespace VRLicensing
         {
             bool modalOpen = overlayPanel != null && overlayPanel.activeSelf;
             bool wantBackground = config != null && config.usePassthroughBackground;
-            bool want = cam != null && modalOpen && (wantBackground || scanWantsPassthrough);
+            bool want = cam != null && modalOpen && wantBackground;
 
             // The XRI spatial keyboard spawns lazily OUTSIDE the rig hierarchy the first
             // time a field is focused, so it must be pulled onto the render layer while
