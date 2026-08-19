@@ -220,6 +220,51 @@ namespace VRLicensing
                 onStatus?.Invoke("No QR code detected. Try again or enter the key manually.");
         }
 
+        private bool TryResolveZXing()
+        {
+            if (m_BarcodeReader != null) return true;
+
+            try
+            {
+                m_BarcodeReader = new ZXing.BarcodeReader();
+                return true;
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[VR Licensing] Failed to create ZXing reader: {e.Message}");
+                return false;
+            }
+        }
+
+        private string TryDecode(Color32[] pixels, int width, int height)
+        {
+            try
+            {
+                var result = m_BarcodeReader.Decode(pixels, width, height);
+                return result?.Text;
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[VR Licensing] QR decode error: {e.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Extracts a license key from the decoded payload. Accepts a raw key
+        /// (XXXX-XXXX-XXXX-XXXX) or a URL/text containing one; falls back to the raw text.
+        /// </summary>
+        private static string ExtractKey(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return raw;
+            raw = raw.Trim();
+
+            var match = System.Text.RegularExpressions.Regex.Match(
+                raw.ToUpperInvariant(), @"[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}");
+
+            return match.Success ? match.Value : raw;
+        }
+
         private void ReleaseWebcam()
         {
             if (m_Webcam == null) return;
