@@ -37,6 +37,15 @@ namespace VRLicensing
         public WebCamTexture CameraTexture => m_Webcam;
 
         /// <summary>
+        /// CPU-built preview, refreshed on every decode tick from the very pixel buffer
+        /// ZXing reads. Bind THIS in the viewfinder rather than the WebCamTexture:
+        /// rendering the WebCamTexture directly shows black under Vulkan on Quest, while
+        /// the CPU pixel path works — and this way the preview is by construction exactly
+        /// what the decoder sees.
+        /// </summary>
+        public Texture2D PreviewTexture { get; private set; }
+
+        /// <summary>
         /// Starts scanning. Exactly one of the callbacks fires per scan session.
         /// </summary>
         /// <param name="timeoutSeconds">Give up after this many seconds without a hit.</param>
@@ -136,10 +145,11 @@ namespace VRLicensing
             Debug.Log($"[VR Licensing] Camera streaming: {m_Webcam.width}x{m_Webcam.height} " +
                       $"rotation={m_Webcam.videoRotationAngle} mirrored={m_Webcam.videoVerticallyMirrored}");
 
-            // 4. Decode loop
-            const float decodeInterval = 0.4f;
+            // 4. Decode loop (also feeds the viewfinder preview from the same buffer)
+            const float decodeInterval = 0.2f;
             float elapsed = 0f;
             float sinceDecode = decodeInterval;
+            bool lumaLogged = false;
 
             while (IsScanning && elapsed < timeoutSeconds)
             {
@@ -149,7 +159,21 @@ namespace VRLicensing
                 if (sinceDecode >= decodeInterval && m_Webcam.isPlaying && m_Webcam.width > 16)
                 {
                     sinceDecode = 0f;
-                    string decoded = TryDecode(m_Webcam.GetPixels32(), m_Webcam.width, m_Webcam.height);
+                    int w = m_Webcam.width, h = m_Webcam.height;
+                    Color32[] pixels = m_Webcam.GetPixels32();
+
+                    UpdatePreview(pixels, w, h);
+
+                    if (!lumaLogged)
+                    {
+                        lumaLogged = true;
+                        long sum = 0; int count = 0;
+                        for (int i = 0; i < pixels.Length; i += 997) { sum += pixels[i].g; count++; }
+                        Debug.Log($"[VR Licensing] First camera frame avg luminance: {(count > 0 ? sum / count : 0)} " +
+                                  "(0 = the OS is serving black frames; >10 = real image, any black is render-only)");
+                    }
+
+                    string decoded = TryDecode(pixels, w, h);
                     if (!string.IsNullOrEmpty(decoded))
                     {
                         string key = ExtractKey(decoded);
@@ -211,6 +235,23 @@ namespace VRLicensing
             return match.Success ? match.Value : raw;
         }
 
+        /// <summary>Copies the decode buffer into the preview texture (created lazily).</summary>
+        private void UpdatePreview(Color32[] pixels, int width, int height)
+        {
+            if (PreviewTexture == null || PreviewTexture.width != width || PreviewTexture.height != height)
+            {
+                if (PreviewTexture != null) Destroy(PreviewTexture);
+                PreviewTexture = new Texture2D(width, height, TextureFormat.RGBA32, false)
+                {
+                    filterMode = FilterMode.Bilinear,
+                    wrapMode = TextureWrapMode.Clamp
+                };
+            }
+
+            PreviewTexture.SetPixels32(pixels);
+            PreviewTexture.Apply(false, false);
+        }
+
         private void Cleanup()
         {
             IsScanning = false;
@@ -220,6 +261,12 @@ namespace VRLicensing
                 if (m_Webcam.isPlaying) m_Webcam.Stop();
                 Destroy(m_Webcam);
                 m_Webcam = null;
+            }
+
+            if (PreviewTexture != null)
+            {
+                Destroy(PreviewTexture);
+                PreviewTexture = null;
             }
 
             m_ScanRoutine = null;
