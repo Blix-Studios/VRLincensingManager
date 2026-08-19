@@ -59,6 +59,12 @@ namespace VRLicensing.Editor
             changed |= EnsureElement(doc, manifest, "uses-feature", "android.hardware.camera", "false");
             changed |= EnsureElement(doc, manifest, "uses-feature", "android.hardware.camera2", "false");
 
+            // Without this feature request HorizonOS shows its system keyboard in a
+            // DISABLED state: it renders, but key presses never reach the app and it
+            // vanishes on session-state changes (e.g. toggling passthrough). Unity logs
+            // "Oculus overlay keyboard is disabled" and license keys become untypeable.
+            changed |= EnsureElement(doc, manifest, "uses-feature", "oculus.software.overlay_keyboard", "false");
+
             if (changed)
             {
                 doc.Save(manifestPath);
