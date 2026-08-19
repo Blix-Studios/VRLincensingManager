@@ -362,11 +362,19 @@ namespace VRLicensing
             imgRt.sizeDelta = new Vector2(340, 240);
             imgRt.anchoredPosition = new Vector2(0, 5);
 
-            CreateTMPText("VfHint", rt,
-                "Press Scan QR again to cancel",
-                11, FontStyles.Italic, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
-                anchor: new Vector2(0.5f, 0f), pivot: new Vector2(0.5f, 0f),
-                size: new Vector2(360, 22), pos: new Vector2(0, 8));
+            // Explicit cancel: the button that started the scan sits BEHIND this panel,
+            // so without this the user has no visible way back.
+            CreatePositionedButton("VfCancel", rt,
+                "Cancel", new Vector2(160, 34), new Vector2(0, 8),
+                COLOR_ERROR, COLOR_ERROR, () =>
+                {
+                    if (qrScanner != null && qrScanner.IsScanning)
+                    {
+                        qrScanner.StopScan();
+                        SetScanStatus("Scan cancelled.", COLOR_TEXT_DIM);
+                    }
+                },
+                anchorAtBottom: true);
 
             viewfinderPanel.SetActive(false);
         }
@@ -382,7 +390,21 @@ namespace VRLicensing
                 viewfinderPanel.SetActive(scanning);
 
             if (scanning)
-                viewfinderImage.texture = qrScanner.CameraTexture; // null until the camera starts
+            {
+                var tex = qrScanner.CameraTexture; // null until the camera starts
+                viewfinderImage.texture = tex;
+
+                // Cameras report their mounting orientation; without compensating, the
+                // preview can show rotated and/or upside-down.
+                if (tex != null)
+                {
+                    viewfinderImage.rectTransform.localEulerAngles =
+                        new Vector3(0f, 0f, -tex.videoRotationAngle);
+                    viewfinderImage.uvRect = tex.videoVerticallyMirrored
+                        ? new Rect(0f, 1f, 1f, -1f)
+                        : new Rect(0f, 0f, 1f, 1f);
+                }
+            }
         }
 
         private static void SetLayerRecursively(GameObject go, int layer)

@@ -112,7 +112,9 @@ namespace VRLicensing
                 yield break;
             }
 
-            m_Webcam = new WebCamTexture(WebCamTexture.devices[0].name, 1024, 1024, 30);
+            // Let the OS pick the camera's native mode. Forcing a resolution the driver
+            // doesn't support (e.g. 1024x1024) can silently deliver black frames on Quest.
+            m_Webcam = new WebCamTexture(devices[0].name);
             m_Webcam.Play();
             onStatus?.Invoke("Point the QR code into view...");
 
@@ -130,6 +132,9 @@ namespace VRLicensing
                 onUnsupported?.Invoke("Camera did not start on this headset.");
                 yield break;
             }
+
+            Debug.Log($"[VR Licensing] Camera streaming: {m_Webcam.width}x{m_Webcam.height} " +
+                      $"rotation={m_Webcam.videoRotationAngle} mirrored={m_Webcam.videoVerticallyMirrored}");
 
             // 4. Decode loop
             const float decodeInterval = 0.4f;
