@@ -97,9 +97,8 @@ namespace VRLicensing
         private bool passthroughActive;
         private Image overlayImage;
 
-        // QR viewfinder — shows the camera feed while scanning so the user can aim.
+        // Scan-mode HUD: floating instructions over passthrough while a QR scan runs.
         private GameObject viewfinderPanel;
-        private RawImage viewfinderImage;
         private Camera hudCam;
 
         // QR scanning (Quest 3/3S camera access; buttons hidden on unsupported headsets)
@@ -331,41 +330,38 @@ namespace VRLicensing
         }
 
         /// <summary>
-        /// Floating camera viewfinder shown while a QR scan runs. Built last so it renders
-        /// above whichever panel started the scan.
+        /// Scan-mode HUD, WhatsApp device-linking style: no panel, no viewfinder — just
+        /// floating text over passthrough telling the user to look at the QR code, plus a
+        /// Cancel button. The user aims with their own eyes through passthrough (the
+        /// headset camera scans whatever the head faces), so no preview is needed — and
+        /// on top of that, the OS blacks out raw camera frames for apps on some HorizonOS
+        /// versions, so a preview couldn't be trusted anyway.
         /// </summary>
         private void BuildViewfinder()
         {
             var overlayRt = overlayPanel.GetComponent<RectTransform>();
 
-            viewfinderPanel = CreatePanel("QrViewfinder", overlayRt, COLOR_PANEL_BG);
+            viewfinderPanel = CreatePanel("ScanHud", overlayRt, Color.clear);
             var rt = viewfinderPanel.GetComponent<RectTransform>();
             rt.anchorMin = new Vector2(0.5f, 0.5f);
             rt.anchorMax = new Vector2(0.5f, 0.5f);
-            rt.sizeDelta = new Vector2(380, 330);
-            rt.anchoredPosition = new Vector2(0, -20);
+            rt.sizeDelta = new Vector2(700, 300);
+            rt.anchoredPosition = new Vector2(0, 40);
 
-            CreateTMPText("VfTitle", rt,
-                "Point at the QR code",
-                16, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
+            CreateTMPText("ScanTitle", rt,
+                "Look at the QR code",
+                26, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
-                size: new Vector2(360, 28), pos: new Vector2(0, -10));
+                size: new Vector2(680, 40), pos: new Vector2(0, -20));
 
-            var imgGo = new GameObject("VfImage");
-            imgGo.transform.SetParent(rt, false);
-            viewfinderImage = imgGo.AddComponent<RawImage>();
-            viewfinderImage.color = Color.white;
-            viewfinderImage.raycastTarget = false;
-            var imgRt = viewfinderImage.rectTransform;
-            imgRt.anchorMin = new Vector2(0.5f, 0.5f);
-            imgRt.anchorMax = new Vector2(0.5f, 0.5f);
-            imgRt.sizeDelta = new Vector2(340, 240);
-            imgRt.anchoredPosition = new Vector2(0, 5);
+            CreateTMPText("ScanSubtitle", rt,
+                "Hold it steady in front of you — or cancel and type the key manually.",
+                15, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
+                size: new Vector2(680, 30), pos: new Vector2(0, -66));
 
-            // Explicit cancel: the button that started the scan sits BEHIND this panel,
-            // so without this the user has no visible way back.
-            CreatePositionedButton("VfCancel", rt,
-                "Cancel", new Vector2(160, 34), new Vector2(0, 8),
+            CreatePositionedButton("ScanCancel", rt,
+                "Cancel", new Vector2(180, 40), new Vector2(0, 30),
                 COLOR_ERROR, COLOR_ERROR, () =>
                 {
                     if (qrScanner != null && qrScanner.IsScanning)
@@ -379,33 +375,44 @@ namespace VRLicensing
             viewfinderPanel.SetActive(false);
         }
 
-        /// <summary>Keeps the viewfinder bound to the live camera feed and auto-hides it.</summary>
+        // Panels hidden while scan mode is active, restored exactly afterwards.
+        private readonly System.Collections.Generic.List<GameObject> panelsHiddenForScan =
+            new System.Collections.Generic.List<GameObject>();
+
+        /// <summary>
+        /// Enters/leaves scan mode: while scanning, every modal panel hides so only the
+        /// floating instructions remain over passthrough; on exit the previous panel
+        /// comes back untouched.
+        /// </summary>
         private void SyncViewfinder()
         {
             if (viewfinderPanel == null) return;
 
             bool scanning = qrScanner != null && qrScanner.IsScanning;
+            if (viewfinderPanel.activeSelf == scanning) return;
 
-            if (viewfinderPanel.activeSelf != scanning)
-                viewfinderPanel.SetActive(scanning);
+            viewfinderPanel.SetActive(scanning);
 
             if (scanning)
             {
-                // CPU-built preview: rendering the WebCamTexture directly is black under
-                // Vulkan on Quest; this texture is refreshed from the decode buffer.
-                viewfinderImage.texture = qrScanner.PreviewTexture; // null until first frame
-
-                // Cameras report their mounting orientation; without compensating, the
-                // preview can show rotated and/or upside-down.
-                var cam = qrScanner.CameraTexture;
-                if (cam != null)
+                panelsHiddenForScan.Clear();
+                foreach (GameObject panel in new[]
+                         { welcomePanel, keyInputPanel, demoExpiredPanel, licenseExpiredPanel, successPanel })
                 {
-                    viewfinderImage.rectTransform.localEulerAngles =
-                        new Vector3(0f, 0f, -cam.videoRotationAngle);
-                    viewfinderImage.uvRect = cam.videoVerticallyMirrored
-                        ? new Rect(0f, 1f, 1f, -1f)
-                        : new Rect(0f, 0f, 1f, 1f);
+                    if (panel != null && panel.activeSelf)
+                    {
+                        panel.SetActive(false);
+                        panelsHiddenForScan.Add(panel);
+                    }
                 }
+            }
+            else
+            {
+                foreach (GameObject panel in panelsHiddenForScan)
+                {
+                    if (panel != null) panel.SetActive(true);
+                }
+                panelsHiddenForScan.Clear();
             }
         }
 
@@ -1838,7 +1845,10 @@ namespace VRLicensing
         {
             bool modalOpen = overlayPanel != null && overlayPanel.activeSelf;
             bool wantBackground = config != null && config.usePassthroughBackground;
-            bool want = cam != null && modalOpen && wantBackground;
+            bool scanning = qrScanner != null && qrScanner.IsScanning;
+            // Scan mode always shows the real room (that's how the user finds the QR);
+            // outside scanning, passthrough is the opt-in background.
+            bool want = cam != null && modalOpen && (wantBackground || scanning);
 
             // The XRI spatial keyboard spawns lazily OUTSIDE the rig hierarchy the first
             // time a field is focused, so it must be pulled onto the render layer while

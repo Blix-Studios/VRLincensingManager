@@ -74,7 +74,7 @@ namespace VRLicensing
             // 1. Camera permissions (Android only). HorizonOS v74+ gates the passthrough
             // camera behind BOTH android.permission.CAMERA and its own HEADSET_CAMERA
             // permission, and pre-grants the latter only until the app explicitly asks
-            // (REVOKE_WHEN_REQUESTED) — so request both, every time.
+            // (REVOKE_WHEN_REQUESTED) - so request both, every time.
 #if UNITY_ANDROID && !UNITY_EDITOR
             string[] required = { Permission.Camera, "horizonos.permission.HEADSET_CAMERA" };
             foreach (string permission in required)
@@ -108,7 +108,7 @@ namespace VRLicensing
                 yield break;
             }
 
-            // 3. Camera device (empty on headsets without camera access, e.g. Quest 2)
+            // 3. Camera devices (empty on headsets without camera access, e.g. Quest 2)
             var devices = WebCamTexture.devices;
             Debug.Log($"[VR Licensing] WebCamTexture devices: {(devices == null ? 0 : devices.Length)}" +
                       (devices != null && devices.Length > 0
@@ -121,118 +121,111 @@ namespace VRLicensing
                 yield break;
             }
 
-            // Let the OS pick the camera's native mode. Forcing a resolution the driver
-            // doesn't support (e.g. 1024x1024) can silently deliver black frames on Quest.
-            m_Webcam = new WebCamTexture(devices[0].name);
-            m_Webcam.Play();
-            onStatus?.Invoke("Point the QR code into view...");
-
-            // Wait for the first real frame
-            float startWait = 0f;
-            while (m_Webcam.width <= 16 && startWait < 5f)
-            {
-                startWait += Time.unscaledDeltaTime;
-                yield return null;
-            }
-
-            if (m_Webcam.width <= 16)
-            {
-                Cleanup();
-                onUnsupported?.Invoke("Camera did not start on this headset.");
-                yield break;
-            }
-
-            Debug.Log($"[VR Licensing] Camera streaming: {m_Webcam.width}x{m_Webcam.height} " +
-                      $"rotation={m_Webcam.videoRotationAngle} mirrored={m_Webcam.videoVerticallyMirrored}");
-
-            // 4. Decode loop (also feeds the viewfinder preview from the same buffer)
+            // 4. Scan, cycling devices: the OS exposes several camera nodes and some of
+            // them serve only privacy-blacked frames. Try each until one delivers a real
+            // image; if every node is black, raw camera access is disabled on this OS and
+            // scanning cannot work (measured: avg luminance 0 on every frame).
             const float decodeInterval = 0.2f;
+            const int blackTicksPerDevice = 10; // ~2s of pure black -> try the next node
             float elapsed = 0f;
-            float sinceDecode = decodeInterval;
-            bool lumaLogged = false;
+            bool anyLight = false;
 
-            while (IsScanning && elapsed < timeoutSeconds)
+            for (int d = 0; d < devices.Length && IsScanning && elapsed < timeoutSeconds; d++)
             {
-                elapsed += Time.unscaledDeltaTime;
-                sinceDecode += Time.unscaledDeltaTime;
+                ReleaseWebcam();
+                // Let the OS pick the camera's native mode: forcing an unsupported
+                // resolution silently delivers black frames.
+                m_Webcam = new WebCamTexture(devices[d].name);
+                m_Webcam.Play();
+                onStatus?.Invoke("Point the QR code into view...");
 
-                if (sinceDecode >= decodeInterval && m_Webcam.isPlaying && m_Webcam.width > 16)
+                float startWait = 0f;
+                while (m_Webcam.width <= 16 && startWait < 5f)
                 {
-                    sinceDecode = 0f;
-                    int w = m_Webcam.width, h = m_Webcam.height;
-                    Color32[] pixels = m_Webcam.GetPixels32();
-
-                    UpdatePreview(pixels, w, h);
-
-                    if (!lumaLogged)
-                    {
-                        lumaLogged = true;
-                        long sum = 0; int count = 0;
-                        for (int i = 0; i < pixels.Length; i += 997) { sum += pixels[i].g; count++; }
-                        Debug.Log($"[VR Licensing] First camera frame avg luminance: {(count > 0 ? sum / count : 0)} " +
-                                  "(0 = the OS is serving black frames; >10 = real image, any black is render-only)");
-                    }
-
-                    string decoded = TryDecode(pixels, w, h);
-                    if (!string.IsNullOrEmpty(decoded))
-                    {
-                        string key = ExtractKey(decoded);
-                        Cleanup();
-                        onDecoded?.Invoke(key);
-                        yield break;
-                    }
+                    startWait += Time.unscaledDeltaTime;
+                    yield return null;
+                }
+                if (m_Webcam.width <= 16)
+                {
+                    Debug.Log($"[VR Licensing] Camera did not start: {devices[d].name}");
+                    continue;
                 }
 
-                yield return null;
+                Debug.Log($"[VR Licensing] Camera streaming ({devices[d].name}): " +
+                          $"{m_Webcam.width}x{m_Webcam.height} rotation={m_Webcam.videoRotationAngle}");
+
+                int blackTicks = 0;
+                bool deviceLit = false;
+                float sinceDecode = decodeInterval;
+
+                while (IsScanning && elapsed < timeoutSeconds)
+                {
+                    elapsed += Time.unscaledDeltaTime;
+                    sinceDecode += Time.unscaledDeltaTime;
+
+                    if (sinceDecode >= decodeInterval && m_Webcam.isPlaying && m_Webcam.width > 16)
+                    {
+                        sinceDecode = 0f;
+                        int w = m_Webcam.width, h = m_Webcam.height;
+                        Color32[] pixels = m_Webcam.GetPixels32();
+
+                        long sum = 0; int count = 0;
+                        for (int i = 0; i < pixels.Length; i += 997) { sum += pixels[i].g; count++; }
+                        long luma = count > 0 ? sum / count : 0;
+
+                        if (luma < 3)
+                        {
+                            if (!deviceLit && ++blackTicks >= blackTicksPerDevice)
+                            {
+                                Debug.Log($"[VR Licensing] Only black frames from {devices[d].name} " +
+                                          "- trying the next device.");
+                                break; // next device
+                            }
+                        }
+                        else
+                        {
+                            if (!deviceLit)
+                                Debug.Log($"[VR Licensing] Real image from {devices[d].name} (luma {luma}).");
+                            deviceLit = true;
+                            anyLight = true;
+                            blackTicks = 0;
+                        }
+
+                        UpdatePreview(pixels, w, h);
+
+                        string decoded = TryDecode(pixels, w, h);
+                        if (!string.IsNullOrEmpty(decoded))
+                        {
+                            string key = ExtractKey(decoded);
+                            Cleanup();
+                            onDecoded?.Invoke(key);
+                            yield break;
+                        }
+                    }
+
+                    yield return null;
+                }
             }
 
+            bool cancelled = !IsScanning;
             Cleanup();
-            onStatus?.Invoke("No QR code detected. Try again or enter the key manually.");
+
+            if (cancelled)
+                yield break; // StopScan already gave feedback
+
+            if (!anyLight)
+                onUnsupported?.Invoke("This headset is not sharing the camera image. " +
+                                      "Update HorizonOS, or enter the key manually.");
+            else
+                onStatus?.Invoke("No QR code detected. Try again or enter the key manually.");
         }
 
-        private bool TryResolveZXing()
+        private void ReleaseWebcam()
         {
-            if (m_BarcodeReader != null) return true;
-
-            try
-            {
-                m_BarcodeReader = new ZXing.BarcodeReader();
-                return true;
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning($"[VR Licensing] Failed to create ZXing reader: {e.Message}");
-                return false;
-            }
-        }
-
-        private string TryDecode(Color32[] pixels, int width, int height)
-        {
-            try
-            {
-                var result = m_BarcodeReader.Decode(pixels, width, height);
-                return result?.Text;
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning($"[VR Licensing] QR decode error: {e.Message}");
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Extracts a license key from the decoded payload. Accepts a raw key
-        /// (XXXX-XXXX-XXXX-XXXX) or a URL/text containing one; falls back to the raw text.
-        /// </summary>
-        private static string ExtractKey(string raw)
-        {
-            if (string.IsNullOrEmpty(raw)) return raw;
-            raw = raw.Trim();
-
-            var match = System.Text.RegularExpressions.Regex.Match(
-                raw.ToUpperInvariant(), @"[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}");
-
-            return match.Success ? match.Value : raw;
+            if (m_Webcam == null) return;
+            if (m_Webcam.isPlaying) m_Webcam.Stop();
+            Destroy(m_Webcam);
+            m_Webcam = null;
         }
 
         /// <summary>Copies the decode buffer into the preview texture (created lazily).</summary>
@@ -256,12 +249,7 @@ namespace VRLicensing
         {
             IsScanning = false;
 
-            if (m_Webcam != null)
-            {
-                if (m_Webcam.isPlaying) m_Webcam.Stop();
-                Destroy(m_Webcam);
-                m_Webcam = null;
-            }
+            ReleaseWebcam();
 
             if (PreviewTexture != null)
             {
