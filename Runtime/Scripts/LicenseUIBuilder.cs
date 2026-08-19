@@ -127,7 +127,6 @@ namespace VRLicensing
         private Component lazyFollowInstance;
 
         // ─────────────────── XR Keyboard Cache ───────────────────
-        private Type xrKeyboardDisplayType;
 
         // ─────────────────────── Factory ───────────────────────
 
@@ -1323,9 +1322,12 @@ namespace VRLicensing
             // and causes an infinite recursion / StackOverflow. The key is uppercased at
             // submit time via NormalizeKey instead.
 
-            // Attach XR Keyboard Display for VR keyboard integration
-            AttachXRKeyboardDisplay(inputField);
-
+            // Input comes from the HorizonOS system overlay keyboard (enabled via the
+            // 'oculus.software.overlay_keyboard' manifest feature the package injects).
+            // The XRI spatial keyboard sample is deliberately NOT attached anymore: it
+            // spawned a second, in-world keyboard alongside the system one, it hid
+            // behind the culling mask during passthrough, and its two-way text binding
+            // caused a history of grief (buffer carry-over, StackOverflowException).
             return inputField;
         }
 
@@ -1518,73 +1520,6 @@ namespace VRLicensing
         }
 
         // ─────────────────── XR Keyboard Integration ───────────────────
-
-        /// <summary>
-        /// Attaches an XRKeyboardDisplay component to the input field's GameObject via reflection.
-        /// Requires the XRI Spatial Keyboard sample to be imported in the consuming project.
-        /// Degrades gracefully if the sample is not present.
-        /// </summary>
-        private void AttachXRKeyboardDisplay(TMP_InputField field)
-        {
-            if (field == null) return;
-
-            // Cache the type lookup
-            if (xrKeyboardDisplayType == null)
-            {
-                xrKeyboardDisplayType = Type.GetType(
-                    "UnityEngine.XR.Interaction.Toolkit.Samples.SpatialKeyboard.XRKeyboardDisplay, " +
-                    "Unity.XR.Interaction.Toolkit.Samples.SpatialKeyboard");
-
-                if (xrKeyboardDisplayType == null)
-                {
-                    Debug.LogWarning("[VR Licensing] XRKeyboardDisplay not found. " +
-                        "Import the 'Spatial Keyboard' sample from XR Interaction Toolkit " +
-                        "in Package Manager to enable VR keyboard support.");
-                    return;
-                }
-
-                Debug.Log("[VR Licensing] XRKeyboardDisplay type resolved successfully.");
-            }
-
-            // If type was previously not found, skip
-            if (xrKeyboardDisplayType == null)
-                return;
-
-            var go = field.gameObject;
-            var flags = System.Reflection.BindingFlags.Instance |
-                        System.Reflection.BindingFlags.NonPublic |
-                        System.Reflection.BindingFlags.Public;
-
-            // Add the component
-            var display = go.AddComponent(xrKeyboardDisplayType);
-
-            // Set inputField via the public property (its setter configures
-            // resetOnDeActivation=false and shouldHideSoftKeyboard=true)
-            var inputFieldProp = xrKeyboardDisplayType.GetProperty("inputField", flags);
-            if (inputFieldProp != null && inputFieldProp.CanWrite)
-                inputFieldProp.SetValue(display, field);
-
-            // useSceneKeyboard = false → use GlobalNonNativeKeyboard
-            var useSceneKbField = xrKeyboardDisplayType.GetField("m_UseSceneKeyboard", flags);
-            if (useSceneKbField != null)
-                useSceneKbField.SetValue(display, false);
-
-            // updateOnKeyPress = true
-            var updateField = xrKeyboardDisplayType.GetField("m_UpdateOnKeyPress", flags);
-            if (updateField != null)
-                updateField.SetValue(display, true);
-
-            // monitorInputFieldCharacterLimit = true (respect characterLimit=4)
-            var monitorField = xrKeyboardDisplayType.GetField("m_MonitorInputFieldCharacterLimit", flags);
-            if (monitorField != null)
-                monitorField.SetValue(display, true);
-
-            // hideKeyboardOnDisable = false (avoid closing keyboard when navigating between fields)
-            var hideField = xrKeyboardDisplayType.GetField("m_HideKeyboardOnDisable", flags);
-            if (hideField != null)
-                hideField.SetValue(display, false);
-
-        }
 
         private IEnumerator ShowSuccessAndHide(string title, string subtitle, float holdSeconds)
         {
