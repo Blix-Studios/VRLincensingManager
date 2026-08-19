@@ -1734,8 +1734,11 @@ namespace VRLicensing
             }
 
             // Main license modal: keep it in front of the player while visible so it
-            // can't be turned away from and ignored.
-            if (cam != null && overlayPanel != null && overlayPanel.activeSelf)
+            // can't be turned away from and ignored — EXCEPT while the keyboard is up
+            // or a key field has focus. Chasing the user's gaze then makes the panel
+            // dive into the keyboard the moment they look down to type, covering the
+            // keys entirely.
+            if (cam != null && overlayPanel != null && overlayPanel.activeSelf && !KeyboardBusy())
                 FollowMainModal(cam);
 
             // Demo timer HUD (only while the demo runs).
@@ -1749,6 +1752,19 @@ namespace VRLicensing
             float remaining = Mathf.Max(0f, demoManagerRef.RemainingDemoSeconds);
             demoTimerText.text = "Demo  ·  " + FormatTime(remaining) + " left";
             demoTimerText.color = remaining <= 60f ? COLOR_ERROR : COLOR_TEXT;
+        }
+
+        /// <summary>
+        /// True while the user is (or is about to be) typing: the HorizonOS system
+        /// keyboard is on screen, or one of the key fields has focus.
+        /// </summary>
+        private bool KeyboardBusy()
+        {
+            if (TouchScreenKeyboard.visible) return true;
+            if (keyField != null && keyField.isFocused) return true;
+            if (expiredKeyField != null && expiredKeyField.isFocused) return true;
+            if (licExpiredKeyField != null && licExpiredKeyField.isFocused) return true;
+            return false;
         }
 
         /// <summary>
@@ -1846,9 +1862,14 @@ namespace VRLicensing
             bool modalOpen = overlayPanel != null && overlayPanel.activeSelf;
             bool wantBackground = config != null && config.usePassthroughBackground;
             bool scanning = qrScanner != null && qrScanner.IsScanning;
+            // Any panel with a key field counts as "typing mode": the user is reading the
+            // key off their phone or PC screen, so show them the real room.
+            bool typing = (keyInputPanel != null && keyInputPanel.activeSelf)
+                       || (demoExpiredPanel != null && demoExpiredPanel.activeSelf)
+                       || (licenseExpiredPanel != null && licenseExpiredPanel.activeSelf);
             // Scan mode always shows the real room (that's how the user finds the QR);
-            // outside scanning, passthrough is the opt-in background.
-            bool want = cam != null && modalOpen && (wantBackground || scanning);
+            // outside those, passthrough is the opt-in background.
+            bool want = cam != null && modalOpen && (wantBackground || scanning || typing);
 
             // The XRI spatial keyboard spawns lazily OUTSIDE the rig hierarchy the first
             // time a field is focused, so it must be pulled onto the render layer while
