@@ -193,6 +193,7 @@ namespace VRLicensing
             successPanel.SetActive(false);
             expiredStatusText.text = "";
             ClearKeyField(expiredKeyField);
+            ApplyPromo(); // server promo may have arrived after the panel was built
         }
 
         /// <summary>Shows the License Expired panel (renewal option).</summary>
@@ -678,57 +679,122 @@ namespace VRLicensing
         /// Left column of the "Demo Expired" panel: where to buy, as text and as a QR the
         /// user can scan with their phone without taking the headset off.
         /// </summary>
+        // Purchase CTA widgets — kept so the promo can be applied/refreshed at show time
+        // (the server's promo arrives after the panel is built).
+        private TextMeshProUGUI expBuyTitle;
+        private TextMeshProUGUI expBuyDetail;
+        private TextMeshProUGUI expBuyUrl;
+        private TextMeshProUGUI expBuyHint;
+        private RawImage expQrImage;
+        private GameObject expQrFrame;
+        private string expQrPayload;
+
+        private string BasePurchaseUrl =>
+            string.IsNullOrWhiteSpace(config.purchaseUrl) ? "vrinstructors.com" : config.purchaseUrl.Trim();
+
         private void BuildPurchaseCta(RectTransform panelRt, float columnX)
         {
-            CreateTMPText("ExpBuyTitle", panelRt,
+            expBuyTitle = CreateTMPText("ExpBuyTitle", panelRt,
                 "Get the full version",
                 16, FontStyles.Bold, COLOR_GREEN, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
-                size: new Vector2(410, 26), pos: new Vector2(columnX, 85));
+                size: new Vector2(410, 26), pos: new Vector2(columnX, 96));
 
-            string url = string.IsNullOrWhiteSpace(config.purchaseUrl)
-                ? "vrinstructors.com"
-                : config.purchaseUrl.Trim();
+            // Promo line (hidden unless a promotion is active).
+            expBuyDetail = CreateTMPText("ExpBuyDetail", panelRt,
+                "",
+                13, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
+                size: new Vector2(410, 40), pos: new Vector2(columnX, 66));
+            expBuyDetail.gameObject.SetActive(false);
 
-            Texture2D qr = TryCreateQRTexture(url);
+            // White quiet-zone backing so the code stays scannable on the dark panel.
+            expQrFrame = CreatePanel("ExpQrFrame", panelRt, Color.white);
+            var frameRt = expQrFrame.GetComponent<RectTransform>();
+            frameRt.anchorMin = new Vector2(0.5f, 0.5f);
+            frameRt.anchorMax = new Vector2(0.5f, 0.5f);
+            frameRt.sizeDelta = new Vector2(150, 150);
+            frameRt.anchoredPosition = new Vector2(columnX, -22);
 
-            if (qr != null)
-            {
-                purchaseQrTexture = qr;
+            var qrGo = new GameObject("ExpQrImage");
+            qrGo.transform.SetParent(frameRt, false);
+            expQrImage = qrGo.AddComponent<RawImage>();
+            expQrImage.raycastTarget = false;
+            var qrRt = expQrImage.rectTransform;
+            qrRt.anchorMin = Vector2.zero;
+            qrRt.anchorMax = Vector2.one;
+            qrRt.offsetMin = Vector2.zero;
+            qrRt.offsetMax = Vector2.zero;
 
-                // White quiet-zone backing so the code stays scannable on the dark panel.
-                var frame = CreatePanel("ExpQrFrame", panelRt, Color.white);
-                var frameRt = frame.GetComponent<RectTransform>();
-                frameRt.anchorMin = new Vector2(0.5f, 0.5f);
-                frameRt.anchorMax = new Vector2(0.5f, 0.5f);
-                frameRt.sizeDelta = new Vector2(180, 180);
-                frameRt.anchoredPosition = new Vector2(columnX, -20);
-
-                var qrGo = new GameObject("ExpQrImage");
-                qrGo.transform.SetParent(frameRt, false);
-                var raw = qrGo.AddComponent<RawImage>();
-                raw.texture = qr;
-                raw.raycastTarget = false;
-                var qrRt = raw.rectTransform;
-                qrRt.anchorMin = Vector2.zero;
-                qrRt.anchorMax = Vector2.one;
-                qrRt.offsetMin = Vector2.zero;
-                qrRt.offsetMax = Vector2.zero;
-            }
-
-            CreateTMPText("ExpBuyUrl", panelRt,
-                url,
+            expBuyUrl = CreateTMPText("ExpBuyUrl", panelRt,
+                BasePurchaseUrl,
                 17, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
-                size: new Vector2(410, 26), pos: new Vector2(columnX, -128));
+                size: new Vector2(410, 26), pos: new Vector2(columnX, -112));
 
-            CreateTMPText("ExpBuyHint", panelRt,
-                qr != null
-                    ? "Scan with your phone, or visit the address above."
-                    : "Visit the address above to purchase a license.",
+            expBuyHint = CreateTMPText("ExpBuyHint", panelRt,
+                "",
                 12, FontStyles.Italic, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
-                size: new Vector2(410, 36), pos: new Vector2(columnX, -158));
+                size: new Vector2(410, 36), pos: new Vector2(columnX, -142));
+
+            ApplyPromo(); // default (no promo) state
+        }
+
+        /// <summary>
+        /// Refreshes the purchase CTA with the promotion in force: server-reported promo
+        /// first, then the local LicenseConfig fallback, else no promo. The QR is
+        /// regenerated only when its payload actually changes.
+        /// </summary>
+        private void ApplyPromo()
+        {
+            if (expBuyTitle == null) return;
+
+            PromoData promo = manager != null ? manager.ActivePromo : null;
+            if (promo == null && config != null && !string.IsNullOrWhiteSpace(config.promoCode))
+            {
+                promo = new PromoData
+                {
+                    code = config.promoCode.Trim(),
+                    headline = config.promoHeadline,
+                    detail = config.promoDetail,
+                    url = BasePurchaseUrl + "/?promo=" + config.promoCode.Trim()
+                };
+            }
+
+            string payload;
+            if (promo != null)
+            {
+                expBuyTitle.text = string.IsNullOrWhiteSpace(promo.headline) ? "Special offer" : promo.headline.ToUpperInvariant();
+                expBuyTitle.color = COLOR_GREEN;
+                expBuyDetail.text = (string.IsNullOrWhiteSpace(promo.detail) ? "" : promo.detail + "\n")
+                                  + "Use code  <b>" + promo.code + "</b>";
+                expBuyDetail.gameObject.SetActive(true);
+                payload = promo.url;
+                expBuyHint.text = "Scan with your phone — the discount is applied automatically.";
+            }
+            else
+            {
+                expBuyTitle.text = "Get the full version";
+                expBuyTitle.color = COLOR_GREEN;
+                expBuyDetail.text = "";
+                expBuyDetail.gameObject.SetActive(false);
+                payload = BasePurchaseUrl;
+                expBuyHint.text = "Scan with your phone, or visit the address above.";
+            }
+
+            // Human-readable address: strip the scheme, keep the promo query visible.
+            expBuyUrl.text = payload.Replace("https://", "").Replace("http://", "");
+
+            if (payload == expQrPayload) return;
+            expQrPayload = payload;
+
+            if (purchaseQrTexture != null) { Destroy(purchaseQrTexture); purchaseQrTexture = null; }
+            purchaseQrTexture = TryCreateQRTexture(payload);
+            bool hasQr = purchaseQrTexture != null;
+            expQrImage.texture = purchaseQrTexture;
+            expQrFrame.SetActive(hasQr);
+            if (!hasQr) expBuyHint.text = "Visit the address above to purchase a license.";
         }
 
         /// <summary>

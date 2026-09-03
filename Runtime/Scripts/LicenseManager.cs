@@ -67,6 +67,12 @@ namespace VRLicensing
         public BrandingData ActiveBranding => cachedBranding;
 
         /// <summary>
+        /// Promotion reported by the server for this product (null when none is active).
+        /// Refreshed on every device status / session report.
+        /// </summary>
+        public PromoData ActivePromo { get; private set; }
+
+        /// <summary>
         /// The downloaded branding logo as a Texture2D.
         /// Available after OnBrandingLogoReady fires. Null if no logo configured.
         /// </summary>
@@ -269,6 +275,7 @@ namespace VRLicensing
                         serverDemoBlocked = status.demo_blocked;
                         serverDemoUsed = status.demo_used_seconds;
                         serverReportedDemo = status.demo_used_seconds;
+                        ActivePromo = (status.promo != null && status.promo.IsValid) ? status.promo : null;
 
                         // If server has more demo time used than local, trust the server
                         float localDemoUsed = SecureLicenseStorage.GetDemoUsedSeconds();
@@ -669,6 +676,7 @@ namespace VRLicensing
                     if (status != null)
                     {
                         serverReportedDemo = status.demo_used_seconds;
+                        ActivePromo = (status.promo != null && status.promo.IsValid) ? status.promo : null;
                         if (status.demo_used_seconds > localDemo)
                             SecureLicenseStorage.SetDemoUsedSeconds(status.demo_used_seconds);
                     }

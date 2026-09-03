@@ -46,5 +46,12 @@ namespace VRLicensing
                  "Keep it short — shorter URLs produce a lower-density QR that is easier " +
                  "to scan with a phone from inside the headset.")]
         public string purchaseUrl = "vrinstructors.com";
+
+        [Tooltip("Optional local promotion shown on the demo-expired panel when the server " +
+                 "reports none (server-side product_promos always wins). Leave the code empty " +
+                 "to disable. The code must exist in Stripe as an active Promotion Code.")]
+        public string promoCode = "";
+        public string promoHeadline = "Launch offer";
+        public string promoDetail = "50% off your first license";
     }
 }

@@ -335,5 +335,23 @@ namespace VRLicensing
         public float demo_limit_seconds;
         public bool demo_blocked;
         public int session_count;
+        public PromoData promo;         // active promotion for this product, or empty
+    }
+
+    /// <summary>
+    /// Promotion the app should advertise (e.g. on the demo-expired panel). Configured
+    /// server-side in product_promos so the offer can change without a rebuild. The
+    /// code must also exist in Stripe — this only tells the app what to show.
+    /// </summary>
+    [Serializable]
+    public class PromoData
+    {
+        public string code;
+        public string headline;
+        public string detail;
+        public int discount_percent;
+        public string url;
+
+        public bool IsValid => !string.IsNullOrEmpty(code) && !string.IsNullOrEmpty(url);
     }
 }
