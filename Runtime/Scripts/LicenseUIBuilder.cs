@@ -1705,6 +1705,8 @@ namespace VRLicensing
             if (demoTimerCanvas != null) demoTimerCanvas.gameObject.SetActive(false);
         }
 
+        private int lastHudSecond = -1;
+
         private void Update()
         {
             var cam = ResolveHudCam();
@@ -1724,7 +1726,7 @@ namespace VRLicensing
                 if (--diagnosticsIn <= 0)
                 {
                     diagnosticsIn = 4; // every ~4 guard ticks ≈ 1.7s at 72 fps
-                    if (cam != null)
+                    if (cam != null && Debug.isDebugBuild)
                     {
                         Transform root = cam.transform.root;
                         Debug.Log($"[VR Licensing] diag: rigY={root.position.y:F2} " +
@@ -1750,7 +1752,12 @@ namespace VRLicensing
                 demoManagerRef = manager.GetComponent<DemoModeManager>();
             if (demoManagerRef == null || demoTimerText == null) return;
 
+            // Rebuilding the TMP mesh every frame forces a canvas rebuild every frame;
+            // the label only changes once per second, so only touch it then.
             float remaining = Mathf.Max(0f, demoManagerRef.RemainingDemoSeconds);
+            int wholeSecond = Mathf.CeilToInt(remaining);
+            if (wholeSecond == lastHudSecond) return;
+            lastHudSecond = wholeSecond;
             demoTimerText.text = "Demo  ·  " + FormatTime(remaining) + " left";
             demoTimerText.color = remaining <= 60f ? COLOR_ERROR : COLOR_TEXT;
         }
