@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 using UnityEngine.EventSystems;
 using TMPro;
@@ -117,6 +118,7 @@ namespace VRLicensing
         // stable while the user aims at its buttons.
         private bool recenteringModal;
         private const float MODAL_RECENTER_ENTER_ANGLE = 32f; // start recentering past this off-center angle
+        private const float MODAL_RECENTER_DEPTH_TOLERANCE = 0.6f; // recenter if nearer/farther than this vs CANVAS_DISTANCE
         private const float MODAL_RECENTER_EXIT_ANGLE = 5f;   // settle once re-centered within this angle
         private const float MODAL_MAX_DISTANCE = CANVAS_DISTANCE * 1.8f; // also recenter if the user walks away
         private const float MODAL_FOLLOW_SPEED = 5f;          // gentle for comfort
@@ -1821,7 +1823,12 @@ namespace VRLicensing
             Vector3 toCanvas = canvas.transform.position - camPos;
             float angle = Vector3.Angle(cam.transform.forward, toCanvas);
 
-            if (angle > MODAL_RECENTER_ENTER_ANGLE || toCanvas.magnitude > MODAL_MAX_DISTANCE)
+            // Also recenter when the panel sits at the wrong DEPTH, not only the wrong angle:
+            // if it was placed in a previous scene (e.g. a Boot/loading scene) and the new rig
+            // spawned further back, it ends up straight ahead but behind the scene's own UI.
+            float depthError = Mathf.Abs(toCanvas.magnitude - CANVAS_DISTANCE);
+            if (angle > MODAL_RECENTER_ENTER_ANGLE || toCanvas.magnitude > MODAL_MAX_DISTANCE ||
+                depthError > MODAL_RECENTER_DEPTH_TOLERANCE)
                 recenteringModal = true;
 
             if (recenteringModal)
@@ -1829,9 +1836,36 @@ namespace VRLicensing
                 float k = 1f - Mathf.Exp(-MODAL_FOLLOW_SPEED * Time.unscaledDeltaTime);
                 canvas.transform.position = Vector3.Lerp(canvas.transform.position, desiredPos, k);
                 canvas.transform.rotation = Quaternion.Slerp(canvas.transform.rotation, desiredRot, k);
-                if (angle < MODAL_RECENTER_EXIT_ANGLE)
+                if (angle < MODAL_RECENTER_EXIT_ANGLE && depthError < 0.1f)
                     recenteringModal = false;
             }
+        }
+
+        /// <summary>
+        /// After a scene load the rig usually respawns somewhere else. If the modal is open,
+        /// snap it in front of the new camera once the rig has settled (two frames), so it never
+        /// stays behind the new scene's geometry or UI.
+        /// </summary>
+        private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+        {
+            hudCam = null;
+            if (overlayPanel != null && overlayPanel.activeSelf && isActiveAndEnabled)
+                StartCoroutine(SnapModalAfterSceneLoad());
+        }
+
+        private IEnumerator SnapModalAfterSceneLoad()
+        {
+            yield return null;
+            yield return null;
+            var cam = ResolveHudCam();
+            if (cam == null || canvas == null) yield break;
+            Vector3 camPos = cam.transform.position;
+            if (camPos.y < 0.5f) camPos.y = 1.5f;
+            Vector3 fwd = Vector3.ProjectOnPlane(cam.transform.forward, Vector3.up);
+            if (fwd.sqrMagnitude < 0.01f) fwd = cam.transform.forward;
+            Vector3 pos = camPos + fwd.normalized * CANVAS_DISTANCE;
+            canvas.transform.SetPositionAndRotation(pos, Quaternion.LookRotation(pos - camPos, Vector3.up));
+            recenteringModal = false;
         }
 
         private Camera ResolveHudCam()
@@ -1863,6 +1897,10 @@ namespace VRLicensing
                 t.rotation = Quaternion.Slerp(t.rotation, targetRot, k);
             }
         }
+
+        private void OnEnable() { SceneManager.sceneLoaded += OnSceneLoaded; }
+
+        private void OnDisable() { SceneManager.sceneLoaded -= OnSceneLoaded; }
 
         private void OnDestroy()
         {
