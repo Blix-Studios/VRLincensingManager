@@ -646,7 +646,10 @@ namespace VRLicensing
             divRt.sizeDelta = new Vector2(2, 250);
             divRt.anchoredPosition = new Vector2(0, -30);
 
-            BuildPurchaseCta(panelRt, columnX: -225f);
+            if (config.showPurchaseCta)
+                BuildPurchaseCta(panelRt, columnX: -225f);
+            else
+                BuildOrganisationKeyHint(panelRt, columnX: -225f);
 
             // ── Right column: redeem an existing key ──
             CreateTMPText("ExpRedeemTitle", panelRt,
@@ -691,6 +694,28 @@ namespace VRLicensing
 
         private string BasePurchaseUrl =>
             string.IsNullOrWhiteSpace(config.purchaseUrl) ? "vrinstructors.com" : config.purchaseUrl.Trim();
+
+        /// <summary>
+        /// Store-compliant left column (config.showPurchaseCta = false): no price, URL, QR or
+        /// promotion. Meta and Steam forbid steering consumers to off-platform purchases; keys
+        /// are sold in bulk to companies and training centres, so the user is sent to them.
+        /// </summary>
+        private void BuildOrganisationKeyHint(RectTransform panelRt, float columnX)
+        {
+            CreateTMPText("ExpOrgTitle", panelRt,
+                "Continue your training",
+                16, FontStyles.Bold, COLOR_GREEN, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
+                size: new Vector2(410, 26), pos: new Vector2(columnX, 85));
+
+            CreateTMPText("ExpOrgBody", panelRt,
+                "The full course is licensed to companies and training centres.\n\n" +
+                "Ask your employer or training centre for a license key, then enter it " +
+                "on the right or scan its QR code.",
+                14, FontStyles.Normal, COLOR_TEXT, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
+                size: new Vector2(380, 180), pos: new Vector2(columnX, -30));
+        }
 
         private void BuildPurchaseCta(RectTransform panelRt, float columnX)
         {
@@ -874,7 +899,9 @@ namespace VRLicensing
 
             // Message
             CreateTMPText("LicExpMsg", panelRt,
-                $"Your license for {config.appDisplayName} has expired.\nRenew on the web portal or enter a new key.",
+                config.showPurchaseCta
+                    ? $"Your license for {config.appDisplayName} has expired.\nRenew on the web portal or enter a new key."
+                    : $"Your license for {config.appDisplayName} has expired.\nAsk your organisation for a new key and enter it below.",
                 13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
                 size: new Vector2(550, 45), pos: new Vector2(0, -72));

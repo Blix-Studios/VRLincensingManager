@@ -42,6 +42,14 @@ namespace VRLicensing
         public bool usePassthroughBackground = false;
 
         [Header("Purchase Call-To-Action")]
+        [Tooltip("Turn OFF for Meta Horizon Store and Steam builds. Store payment policies forbid " +
+                 "pointing consumers to off-platform purchases (Meta App Policies 1.1.2: only bulk " +
+                 "sales to business customers may happen off-platform). When OFF, the demo-expired " +
+                 "panel shows no price, URL, QR code or promotion, only a neutral 'ask your " +
+                 "organisation for a license key' message, and the license-expired text no longer " +
+                 "mentions the web portal. Leave ON for APKs distributed directly to businesses.")]
+        public bool showPurchaseCta = true;
+
         [Tooltip("Store URL shown (as text and as a QR code) when the demo runs out. " +
                  "Keep it short — shorter URLs produce a lower-density QR that is easier " +
                  "to scan with a phone from inside the headset.")]
