@@ -11,6 +11,9 @@ namespace VRLicensing
     /// License validation, device binding and demo accounting go through
     /// SECURITY DEFINER RPCs (see migration 20260706120000_add_vr_licensing_rpcs.sql)
     /// so the anon key can no longer read/enumerate the tables directly.
+    /// v1.12 adds get_license_branding / report_telemetry (with a fallback to the
+    /// pre-1.12 direct table access while the functions are not deployed), the
+    /// verify-store-entitlement Edge Function, p_store_user_id and p_events.
     /// </summary>
     public class SupabaseClient : MonoBehaviour
     {
@@ -32,15 +35,34 @@ namespace VRLicensing
 
         private UnityWebRequest BuildRpc(string function, string jsonBody)
         {
-            var request = new UnityWebRequest($"{supabaseUrl}/rest/v1/rpc/{function}", "POST");
+            return BuildPost($"{supabaseUrl}/rest/v1/rpc/{function}", jsonBody, 10);
+        }
+
+        private UnityWebRequest BuildPost(string url, string jsonBody, int timeoutSeconds)
+        {
+            var request = new UnityWebRequest(url, "POST");
             request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(jsonBody));
             request.downloadHandler = new DownloadHandlerBuffer();
             request.SetRequestHeader("apikey", anonKey);
             request.SetRequestHeader("Authorization", $"Bearer {anonKey}");
             request.SetRequestHeader("Content-Type", "application/json");
             request.SetRequestHeader("Accept", "application/json");
-            request.timeout = 10;
+            request.timeout = timeoutSeconds;
             return request;
+        }
+
+        /// <summary>
+        /// PostgREST answers 404 (PGRST202) when an RPC does not exist or its signature does not
+        /// match. That is how the client tells "function not deployed yet" from a real failure
+        /// and falls back to the pre-1.12 path.
+        /// </summary>
+        private static bool IsFunctionMissing(UnityWebRequest request) => request.responseCode == 404;
+
+        private static string Snippet(UnityWebRequest request)
+        {
+            string text = request.downloadHandler != null ? request.downloadHandler.text : null;
+            if (string.IsNullOrEmpty(text)) return "";
+            return text.Length > 160 ? text.Substring(0, 160) + "…" : text;
         }
 
         // ────────────────────────────────────────────────────────────────────
@@ -107,16 +129,31 @@ namespace VRLicensing
         // ────────────────────────────────────────────────────────────────────
         // 2. Read THIS device's demo status (scoped, no enumeration).
         //    Replaces GET device_registry?device_unique_id=eq...
+        //    v1.12: optional p_store_user_id adds the "store" block to the response
+        //    (read-only view of store_entitlements; no store call server-side).
         // ────────────────────────────────────────────────────────────────────
 
         public IEnumerator GetDeviceStatus(int productId,
             Action<DeviceStatus> onSuccess, Action<string> onError)
         {
-            var body = JsonUtility.ToJson(new ReqStatus
-            {
-                p_device_id = SystemInfo.deviceUniqueIdentifier,
-                p_product_id = productId
-            });
+            return GetDeviceStatus(productId, null, onSuccess, onError);
+        }
+
+        public IEnumerator GetDeviceStatus(int productId, string storeUserId,
+            Action<DeviceStatus> onSuccess, Action<string> onError)
+        {
+            string body = string.IsNullOrEmpty(storeUserId)
+                ? JsonUtility.ToJson(new ReqStatus
+                {
+                    p_device_id = SystemInfo.deviceUniqueIdentifier,
+                    p_product_id = productId
+                })
+                : JsonUtility.ToJson(new ReqStatusStore
+                {
+                    p_device_id = SystemInfo.deviceUniqueIdentifier,
+                    p_product_id = productId,
+                    p_store_user_id = storeUserId
+                });
 
             using (var request = BuildRpc("get_device_status", body))
             {
@@ -145,10 +182,12 @@ namespace VRLicensing
         //    The server ADDS the positive delta; the client can never lower the
         //    counter nor touch demo_blocked. Replaces the upsert that trusted a
         //    client-supplied total. Send the PER-SESSION delta, not a total.
+        //    v1.12: optional p_events (JSON array) carries store analytics events.
         // ────────────────────────────────────────────────────────────────────
 
         public IEnumerator ReportDeviceSession(int productId, float demoDeltaSeconds,
-            string lastLicenseKey, Action<DeviceStatus> onSuccess, Action<string> onError)
+            string lastLicenseKey, Action<DeviceStatus> onSuccess, Action<string> onError,
+            string eventsJsonArray = null)
         {
             var body = JsonUtility.ToJson(new ReqReport
             {
@@ -159,6 +198,10 @@ namespace VRLicensing
                 p_device_name = SystemInfo.deviceName,
                 p_last_license_key = lastLicenseKey ?? ""
             });
+
+            // JsonUtility cannot emit a free-form jsonb value; splice the pre-built array in.
+            if (!string.IsNullOrEmpty(eventsJsonArray))
+                body = body.Substring(0, body.Length - 1) + ",\"p_events\":" + eventsJsonArray + "}";
 
             using (var request = BuildRpc("report_device_session", body))
             {
@@ -205,12 +248,72 @@ namespace VRLicensing
         }
 
         // ────────────────────────────────────────────────────────────────────
-        // Branding (unchanged — read of license_branding by license id)
+        // 4. Branding — v1.12: get_license_branding RPC (SECURITY DEFINER; the
+        //    server checks the key is valid for the product and bound to this
+        //    device). Falls back to the direct license_branding read while the
+        //    function is not deployed (onError reports notFound = true).
         // ────────────────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Fetches branding data for a license from the license_branding table.
-        /// Returns null if no branding is configured by the client.
+        /// Fetches branding through the get_license_branding RPC.
+        /// </summary>
+        /// <param name="onSuccess">BrandingData, or null when the client configured none.</param>
+        /// <param name="onError">(functionMissing, message). functionMissing = the RPC is not deployed.</param>
+        public IEnumerator FetchBrandingRpc(string licenseKey, int productId, string deviceId,
+            Action<BrandingData> onSuccess, Action<bool, string> onError)
+        {
+            var body = JsonUtility.ToJson(new ReqBranding
+            {
+                p_license_key = licenseKey,
+                p_product_id = productId,
+                p_device_id = deviceId
+            });
+
+            using (var request = BuildRpc("get_license_branding", body))
+            {
+                yield return request.SendWebRequest();
+
+                if (request.result != UnityWebRequest.Result.Success)
+                {
+                    onError?.Invoke(IsFunctionMissing(request),
+                        $"get_license_branding failed: {request.error} (HTTP {request.responseCode}) {Snippet(request)}");
+                    yield break;
+                }
+
+                try
+                {
+                    string text = request.downloadHandler.text?.Trim();
+                    if (string.IsNullOrEmpty(text) || text == "null" || text == "{}")
+                    {
+                        onSuccess?.Invoke(null);
+                        yield break;
+                    }
+
+                    var result = JsonUtility.FromJson<RpcBrandingResult>(text);
+                    if (result == null || (string.IsNullOrEmpty(result.brandName) && string.IsNullOrEmpty(result.logoUrl)))
+                    {
+                        if (result != null && !string.IsNullOrEmpty(result.error))
+                            Debug.LogWarning($"[VR Licensing] get_license_branding: {result.error}");
+                        onSuccess?.Invoke(null);
+                        yield break;
+                    }
+
+                    onSuccess?.Invoke(new BrandingData
+                    {
+                        brand_name = result.brandName,
+                        logo_url = result.logoUrl
+                    });
+                }
+                catch (Exception e)
+                {
+                    onError?.Invoke(false, $"Error parsing branding response: {e.Message}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Pre-1.12 branding read (direct select on license_branding by license id). Kept as the
+        /// fallback until get_license_branding is deployed and the anon policy is removed.
         /// </summary>
         public IEnumerator FetchBranding(string licenseId,
             Action<BrandingData> onSuccess, Action<string> onError)
@@ -254,11 +357,48 @@ namespace VRLicensing
         }
 
         // ────────────────────────────────────────────────────────────────────
-        // Telemetry (unchanged — anon INSERT into device_telemetry)
+        // 5. Telemetry — v1.12: report_telemetry RPC (SECURITY DEFINER; server
+        //    checks the key is bound to this device, caps size and rate). Falls
+        //    back to the direct insert while the function is not deployed.
         // ────────────────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Sends device telemetry. Fire-and-forget; errors are logged only.
+        /// Sends telemetry through the report_telemetry RPC. Fire-and-forget; errors are
+        /// logged only, except that a missing function triggers <paramref name="onFunctionMissing"/>
+        /// so the caller can fall back to <see cref="SendTelemetry"/>.
+        /// </summary>
+        public IEnumerator SendTelemetryRpc(string licenseKey, int productId, string deviceId,
+            TelemetryPayload payload, Action onFunctionMissing)
+        {
+            string head = JsonUtility.ToJson(new ReqTelemetryHead
+            {
+                p_license_key = licenseKey,
+                p_product_id = productId,
+                p_device_id = deviceId
+            });
+            string body = head.Substring(0, head.Length - 1) + ",\"p_payload\":" + payload.ToJson() + "}";
+
+            using (var request = BuildRpc("report_telemetry", body))
+            {
+                yield return request.SendWebRequest();
+
+                if (request.result == UnityWebRequest.Result.Success) yield break;
+
+                if (IsFunctionMissing(request))
+                {
+                    Debug.Log("[VR Licensing] report_telemetry not deployed yet — falling back to the direct insert.");
+                    onFunctionMissing?.Invoke();
+                }
+                else
+                {
+                    Debug.LogWarning($"[VR Licensing] report_telemetry failed (non-critical): {request.error} " +
+                                     $"(HTTP {request.responseCode}) {Snippet(request)}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Pre-1.12 telemetry path (anon INSERT into device_telemetry). Kept as the fallback.
         /// </summary>
         public IEnumerator SendTelemetry(TelemetryPayload payload)
         {
@@ -278,6 +418,64 @@ namespace VRLicensing
 
                 if (request.result != UnityWebRequest.Result.Success)
                     Debug.LogWarning($"[VR Licensing] Telemetry send failed (non-critical): {request.error}");
+            }
+        }
+
+        // ────────────────────────────────────────────────────────────────────
+        // 6. Store subscription verification — Edge Function (spec §1.1, phase B).
+        //    The function validates the nonce with the store, reads the user's
+        //    subscription through the store's S2S API and upserts store_entitlements.
+        //    The client only ever receives the verdict.
+        // ────────────────────────────────────────────────────────────────────
+
+        public IEnumerator VerifyStoreEntitlement(string storeUserId, string nonce, int productId,
+            string deviceId, string platform, Action<StoreVerifyResult> onSuccess, Action<string> onError)
+        {
+            var body = JsonUtility.ToJson(new ReqVerifyStore
+            {
+                metaUserId = storeUserId,
+                nonce = nonce,
+                productId = productId,
+                deviceId = deviceId,
+                platform = platform
+            });
+
+            using (var request = BuildPost($"{supabaseUrl}/functions/v1/verify-store-entitlement", body, 20))
+            {
+                Debug.Log("[VR Licensing] Verifying store subscription with the server...");
+                yield return request.SendWebRequest();
+
+                if (request.result != UnityWebRequest.Result.Success)
+                {
+                    onError?.Invoke($"verify-store-entitlement failed: {request.error} " +
+                                    $"(HTTP {request.responseCode}) {Snippet(request)}");
+                    yield break;
+                }
+
+                StoreVerifyResult result;
+                try
+                {
+                    result = JsonUtility.FromJson<StoreVerifyResult>(request.downloadHandler.text);
+                }
+                catch (Exception e)
+                {
+                    onError?.Invoke($"Error parsing verify-store-entitlement response: {e.Message}");
+                    yield break;
+                }
+
+                if (result == null)
+                {
+                    onError?.Invoke("verify-store-entitlement returned an empty response.");
+                    yield break;
+                }
+
+                if (!result.entitled && !string.IsNullOrEmpty(result.error))
+                {
+                    onError?.Invoke(result.error);
+                    yield break;
+                }
+
+                onSuccess?.Invoke(result);
             }
         }
     }
@@ -302,6 +500,14 @@ namespace VRLicensing
     }
 
     [Serializable]
+    internal class ReqStatusStore
+    {
+        public string p_device_id;
+        public int p_product_id;
+        public string p_store_user_id;
+    }
+
+    [Serializable]
     internal class ReqReport
     {
         public string p_device_id;
@@ -312,6 +518,32 @@ namespace VRLicensing
         public string p_last_license_key;
     }
 
+    [Serializable]
+    internal class ReqBranding
+    {
+        public string p_license_key;
+        public int p_product_id;
+        public string p_device_id;
+    }
+
+    [Serializable]
+    internal class ReqTelemetryHead
+    {
+        public string p_license_key;
+        public int p_product_id;
+        public string p_device_id;
+    }
+
+    [Serializable]
+    internal class ReqVerifyStore
+    {
+        public string metaUserId;
+        public string nonce;
+        public int productId;
+        public string deviceId;
+        public string platform;
+    }
+
     /// <summary>Result of validate_and_bind_license RPC.</summary>
     [Serializable]
     public class RpcLicenseResult
@@ -320,6 +552,15 @@ namespace VRLicensing
         public string code;   // ok, not_found, inactive, expired, bound_other_device, invalid, error
         public string error;
         public LicenseData license;
+    }
+
+    /// <summary>Result of get_license_branding RPC (v1.12).</summary>
+    [Serializable]
+    public class RpcBrandingResult
+    {
+        public string brandName;
+        public string logoUrl;
+        public string error;
     }
 
     /// <summary>
@@ -336,6 +577,24 @@ namespace VRLicensing
         public bool demo_blocked;
         public int session_count;
         public PromoData promo;         // active promotion for this product, or empty
+        public StoreStatus store;       // v1.12: only when p_store_user_id was sent
+    }
+
+    /// <summary>
+    /// Read-only view of store_entitlements for the signed-in store user (v1.12, spec §1.3).
+    /// No store call happens server-side for this; it reflects the last verification.
+    /// </summary>
+    [Serializable]
+    public class StoreStatus
+    {
+        public bool entitled;
+        public string sku;
+        public string expiresAt;
+        public string graceUntil;
+        public string status;
+        public string lastVerifiedAt;
+
+        public bool HasData => !string.IsNullOrEmpty(status) || !string.IsNullOrEmpty(sku);
     }
 
     /// <summary>
