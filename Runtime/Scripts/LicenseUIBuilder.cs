@@ -1071,7 +1071,8 @@ namespace VRLicensing
             try
             {
                 if (label.font == null) return true;
-                return label.font.HasCharacters(text, out System.Collections.Generic.List<char> _, true, true);
+                // Unity 6 TMP: HasCharacters(string, out uint[] missing, searchFallbacks, tryAddCharacter)
+                return label.font.HasCharacters(text, out uint[] _, true, true);
             }
             catch (Exception)
             {
