@@ -1,0 +1,25 @@
+{
+    "name": "VRLicensing.MetaStore",
+    "rootNamespace": "VRLicensing.MetaStore",
+    "references": [
+        "VRLicensing.Runtime",
+        "Oculus.Platform"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "VRL_META_PLATFORM"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.meta.xr.sdk.platform",
+            "expression": "",
+            "define": "VRL_META_PLATFORM"
+        }
+    ],
+    "noEngineReferences": false
+}

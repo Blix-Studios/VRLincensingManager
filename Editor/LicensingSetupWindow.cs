@@ -26,6 +26,9 @@ namespace VRLicensing.Editor
         private SerializedProperty _demoDurationProp;
         private SerializedProperty _maxOfflineHoursProp;
         private SerializedProperty _rsaPublicKeyProp;
+        private SerializedProperty _storePlatformProp;
+        private SerializedProperty _storeSkusProp;
+        private SerializedProperty _enforceEntitlementProp;
 
         // Styles
         private GUIStyle _headerStyle;
@@ -189,6 +192,44 @@ namespace VRLicensing.Editor
 
                 DrawSeparator();
 
+                // ── Section 4: Store (v1.12) ────────────────────────
+                EditorGUILayout.Space(4);
+                EditorGUILayout.LabelField("4. Store (Meta Horizon Store / Steam)", _sectionStyle);
+                EditorGUILayout.Space(2);
+
+                EditorGUILayout.PropertyField(_storePlatformProp,
+                    new GUIContent("Store Platform",
+                        "None for company APKs. MetaHorizon for Meta Horizon Store builds (entitlement check + in-app subscriptions)."));
+                EditorGUILayout.PropertyField(_storeSkusProp, new GUIContent("Subscription SKUs"), true);
+                EditorGUILayout.PropertyField(_enforceEntitlementProp,
+                    new GUIContent("Enforce Entitlement",
+                        "ON only in published store builds. OFF during development (sideloaded APKs fail the check)."));
+
+                bool metaInstalled = MetaPlatformDefineSync.IsMetaPlatformInstalled();
+                var platform = (StorePlatform)_storePlatformProp.enumValueIndex;
+                if (platform == StorePlatform.MetaHorizon && !metaInstalled)
+                {
+                    EditorGUILayout.HelpBox(
+                        "Meta XR Platform SDK (com.meta.xr.sdk.platform) is NOT installed. The build will behave as " +
+                        "storePlatform = None. Install the package (scoped registry https://npm.developer.oculus.com, " +
+                        "scope com.meta.xr) and set the App ID in Meta > Platform > Edit Settings.",
+                        MessageType.Warning);
+                }
+                else if (platform == StorePlatform.MetaHorizon)
+                {
+                    EditorGUILayout.HelpBox(
+                        "Meta XR Platform SDK installed — VRL_META_PLATFORM is active. Remember: App ID in " +
+                        "Meta > Platform > Edit Settings, the three SKUs created in the dashboard, and " +
+                        "showPurchaseCta OFF.",
+                        MessageType.Info);
+                }
+                else if (platform == StorePlatform.Steam)
+                {
+                    EditorGUILayout.HelpBox("Steam is reserved for phase 2; the build behaves as None.", MessageType.Info);
+                }
+
+                DrawSeparator();
+
                 // ── Status Summary ──────────────────────────────────
                 EditorGUILayout.Space(4);
                 EditorGUILayout.LabelField("Status Summary", _sectionStyle);
@@ -237,6 +278,9 @@ namespace VRLicensing.Editor
             _demoDurationProp = _serializedConfig.FindProperty("demoDurationSeconds");
             _maxOfflineHoursProp = _serializedConfig.FindProperty("maxOfflineHours");
             _rsaPublicKeyProp = _serializedConfig.FindProperty("rsaPublicKeyPem");
+            _storePlatformProp = _serializedConfig.FindProperty("storePlatform");
+            _storeSkusProp = _serializedConfig.FindProperty("storeSkus");
+            _enforceEntitlementProp = _serializedConfig.FindProperty("enforceEntitlement");
         }
 
         private void CreateLicenseConfig()
