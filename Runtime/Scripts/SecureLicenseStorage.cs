@@ -20,6 +20,7 @@ namespace VRLicensing
         private const string SESSION_USED_KEY = "vrl_session_used";
         private const string INTEGRITY_SEAL_KEY = "vrl_seal";
         private const string FIRST_RUN_KEY = "vrl_init";
+        private const string STORE_ENTITLEMENT_KEY = "vrl_store_entitlement"; // v1.12
 
         private static byte[] GetEncryptionKey()
         {
@@ -122,6 +123,12 @@ namespace VRLicensing
                 PlayerPrefs.GetString(FIRST_RUN_KEY, "")
             );
 
+            // v1.12: the store entitlement joins the seal ONLY when present, so devices updated
+            // from older builds (which never wrote it) keep a valid seal and are not flagged as
+            // tampered on their first launch after the update.
+            string store = PlayerPrefs.GetString(STORE_ENTITLEMENT_KEY, "");
+            if (!string.IsNullOrEmpty(store)) payload += "|" + store;
+
             byte[] hmacKey = GetHMACKey();
             using (var hmac = new HMACSHA256(hmacKey))
             {
@@ -185,6 +192,52 @@ namespace VRLicensing
             PlayerPrefs.DeleteKey(SESSION_USED_KEY);
             PlayerPrefs.DeleteKey(INTEGRITY_SEAL_KEY);
             PlayerPrefs.DeleteKey(FIRST_RUN_KEY);
+            PlayerPrefs.DeleteKey(STORE_ENTITLEMENT_KEY);
+            PlayerPrefs.Save();
+        }
+
+        #endregion
+
+        #region Store Entitlement (Encrypted, v1.12)
+
+        /// <summary>Saves a server-verified store subscription, encrypted and sealed like a license.</summary>
+        public static void SaveStoreEntitlement(StoreEntitlementData data)
+        {
+            try
+            {
+                string json = JsonUtility.ToJson(data);
+                PlayerPrefs.SetString(STORE_ENTITLEMENT_KEY, Encrypt(json));
+                UpdateIntegritySeal();
+                PlayerPrefs.Save();
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[VR Licensing] Error saving store entitlement: {e.Message}");
+            }
+        }
+
+        /// <summary>Loads the cached store subscription, or null when none / undecryptable.</summary>
+        public static StoreEntitlementData LoadStoreEntitlement()
+        {
+            try
+            {
+                string encrypted = PlayerPrefs.GetString(STORE_ENTITLEMENT_KEY, "");
+                if (string.IsNullOrEmpty(encrypted)) return null;
+                return JsonUtility.FromJson<StoreEntitlementData>(Decrypt(encrypted));
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[VR Licensing] Error loading store entitlement: {e.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>Removes the cached store subscription (keeps license/demo data) and re-seals.</summary>
+        public static void ClearStoreEntitlement()
+        {
+            if (!PlayerPrefs.HasKey(STORE_ENTITLEMENT_KEY)) return;
+            PlayerPrefs.DeleteKey(STORE_ENTITLEMENT_KEY);
+            UpdateIntegritySeal();
             PlayerPrefs.Save();
         }
 

@@ -32,9 +32,36 @@ namespace VRLicensing
         }
 
         /// <summary>
-        /// Returns true if the license is currently active and not expired.
+        /// Status values the server may send. Anything else (including values added later,
+        /// e.g. "revoked", or a typo) is simply "not active": no exception, no access.
         /// </summary>
-        public bool IsValid => status == "active" && DateTime.UtcNow < ExpirationDate;
+        public const string STATUS_ACTIVE = "active";
+
+        /// <summary>True only for the exact server status "active" (case-sensitive, trimmed).</summary>
+        public bool IsStatusActive => status != null && status.Trim() == STATUS_ACTIVE;
+
+        /// <summary>True when the expiration date has passed (or could not be parsed).</summary>
+        public bool IsExpiredByDate => DateTime.UtcNow >= ExpirationDate;
+
+        /// <summary>
+        /// Returns true if the license is currently active and not expired. Unknown or empty
+        /// statuses count as invalid.
+        /// </summary>
+        public bool IsValid => IsStatusActive && !IsExpiredByDate;
+
+        /// <summary>
+        /// Why <see cref="IsValid"/> is false, for the user: the status when it is not "active"
+        /// (e.g. "revoked", "suspended", "cancelled"), otherwise "expired". Null when valid.
+        /// </summary>
+        public string InvalidReason
+        {
+            get
+            {
+                if (IsValid) return null;
+                if (!IsStatusActive) return string.IsNullOrWhiteSpace(status) ? "inactive" : status.Trim();
+                return "expired";
+            }
+        }
 
         /// <summary>
         /// Returns the remaining time before expiration. Negative if already expired.
