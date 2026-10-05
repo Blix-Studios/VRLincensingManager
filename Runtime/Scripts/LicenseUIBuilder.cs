@@ -73,6 +73,35 @@ namespace VRLicensing
         private Button licExpiredActivateButton;
         private TextMeshProUGUI licExpiredActivateButtonText;
         private TextMeshProUGUI licExpiredStatusText;
+        private TextMeshProUGUI licExpMsgText;
+
+        // v1.12 — store subscriptions (MetaHorizon builds) and the privacy device code
+        private bool storeOffersEnabled;        // config.storePlatform resolved to a registered provider
+        private GameObject expDivider;          // demo-expired column divider
+        private RectTransform expKeyColumn;     // demo-expired right column ("already have a key")
+        private StoreColumn demoStoreColumn;    // demo-expired left column in store builds
+        private GameObject licExpDivider;
+        private RectTransform licExpKeyColumn;
+        private StoreColumn licStoreColumn;
+        private GameObject welcomeBtnContainer;
+        private readonly System.Collections.Generic.List<TextMeshProUGUI> deviceCodeLabels =
+            new System.Collections.Generic.List<TextMeshProUGUI>();
+        private const float COLUMN_X = 225f;    // horizontal offset of each column from the panel centre
+
+        /// <summary>Widgets of one "subscribe" column (demo-expired / license-expired panels).</summary>
+        private sealed class StoreColumn
+        {
+            public GameObject root;
+            public RectTransform rt;
+            public TextMeshProUGUI title;
+            public TextMeshProUGUI subtitle;
+            public TextMeshProUGUI status;
+            public readonly Button[] buttons = new Button[3];
+            public readonly TextMeshProUGUI[] labels = new TextMeshProUGUI[3];
+            public readonly string[] skus = new string[3];
+            public bool collapsed;
+            public Coroutine populate;
+        }
 
         // Success Panel
         private GameObject successPanel;
@@ -140,6 +169,10 @@ namespace VRLicensing
             var builder = go.AddComponent<LicenseUIBuilder>();
             builder.config = licenseConfig;
             builder.manager = licenseManager;
+            // The store assemblies register before BeforeSceneLoad, so this is already settled
+            // (the manager resolves the same thing, and logs the warning, in Initialize).
+            builder.storeOffersEnabled =
+                StorePlatformRegistry.Effective(licenseConfig.storePlatform) == StorePlatform.MetaHorizon;
             builder.BuildUI();
 
             return builder;
@@ -157,6 +190,7 @@ namespace VRLicensing
             demoExpiredPanel.SetActive(false);
             licenseExpiredPanel.SetActive(false);
             successPanel.SetActive(false);
+            if (welcomeBtnContainer != null) welcomeBtnContainer.SetActive(true);
 
             float used = 0f;
             if (manager != null)
@@ -167,6 +201,9 @@ namespace VRLicensing
             float remaining = Mathf.Max(0f, config.demoDurationSeconds - used);
             welcomeInfoText.text =
                 $"Free demo: {FormatDuration(remaining)} remaining of {FormatDuration(config.demoDurationSeconds)}";
+            welcomeInfoText.color = COLOR_TEXT_DIM;
+            welcomeInfoText.fontStyle = FontStyles.Italic;
+            RefreshDeviceCodes();
         }
 
         /// <summary>Shows the Key Input panel for entering a license key.</summary>
@@ -180,10 +217,15 @@ namespace VRLicensing
             licenseExpiredPanel.SetActive(false);
             successPanel.SetActive(false);
             statusText.text = "";
+            statusText.color = COLOR_TEXT_DIM;
             ClearKeyField(keyField);
+            RefreshDeviceCodes();
         }
 
-        /// <summary>Shows the Demo Expired panel (only license key option).</summary>
+        /// <summary>
+        /// Shows the Demo Expired panel: license-key column, plus (store builds) the Meta
+        /// subscription plans, or (direct APKs) the purchase CTA / organisation hint.
+        /// </summary>
         public void ShowDemoExpired()
         {
             EnsurePositioned();
@@ -194,12 +236,19 @@ namespace VRLicensing
             licenseExpiredPanel.SetActive(false);
             successPanel.SetActive(false);
             expiredStatusText.text = "";
+            expiredStatusText.color = COLOR_TEXT_DIM;
             ClearKeyField(expiredKeyField);
             ApplyPromo(); // server promo may have arrived after the panel was built
+            RefreshDeviceCodes();
+            if (demoStoreColumn != null) StartPopulate(demoStoreColumn, expDivider, expKeyColumn);
         }
 
-        /// <summary>Shows the License Expired panel (renewal option).</summary>
-        public void ShowLicenseExpired()
+        /// <summary>
+        /// Shows the License Expired panel (renewal option).
+        /// </summary>
+        /// <param name="storeExpiry">true when a store subscription (not a key) ran out / needs re-verification.</param>
+        /// <param name="reason">Why the license is not valid: "expired", or a server status such as "revoked".</param>
+        public void ShowLicenseExpired(bool storeExpiry = false, string reason = null)
         {
             EnsurePositioned();
             overlayPanel.SetActive(true);
@@ -209,7 +258,80 @@ namespace VRLicensing
             licenseExpiredPanel.SetActive(true);
             successPanel.SetActive(false);
             licExpiredStatusText.text = "";
+            licExpiredStatusText.color = COLOR_TEXT_DIM;
             ClearKeyField(licExpiredKeyField);
+            if (licExpMsgText != null) licExpMsgText.text = LicenseExpiredMessage(storeExpiry, reason);
+            RefreshDeviceCodes();
+            if (licStoreColumn != null) StartPopulate(licStoreColumn, licExpDivider, licExpKeyColumn);
+        }
+
+        private string LicenseExpiredMessage(bool storeExpiry, string reason)
+        {
+            string app = config.appDisplayName;
+            if (storeExpiry)
+                return $"Your subscription to {app} has ended or needs to be verified again.\n" +
+                       "Choose a plan to continue, or enter a license key.";
+
+            string what = string.IsNullOrEmpty(reason) || reason == "expired"
+                ? $"Your license for {app} has expired."
+                : $"Your license for {app} is no longer active ({reason}).";
+
+            if (storeOffersEnabled)
+                return what + "\nChoose a plan to continue, or enter a new license key.";
+            return config.showPurchaseCta
+                ? what + "\nRenew on the web portal or enter a new key."
+                : what + "\nAsk your organisation for a new key and enter it below.";
+        }
+
+        /// <summary>
+        /// Store-subscription counterpart of <see cref="ShowLicensed"/>: confirmation, then hide.
+        /// </summary>
+        public void ShowSubscribed(bool alreadyActive = false)
+        {
+            HideDemoTimer();
+            EnsurePositioned();
+            if (successAnimating) return;
+
+            string title = alreadyActive ? "Subscription active" : "Thank you for subscribing!";
+            string subtitle = alreadyActive
+                ? "Your Meta account has an active subscription.\nEverything's good — enjoy the simulator."
+                : "Your subscription is active.\nThe simulator will unlock automatically.";
+
+            StartCoroutine(ShowSuccessAndHide(title, subtitle, alreadyActive ? 8f : 2.5f));
+        }
+
+        /// <summary>
+        /// One-line notice (amber) on whichever panel is open — e.g. "An internet connection is
+        /// needed to verify your subscription." Does not change panels.
+        /// </summary>
+        public void ShowNotice(string message)
+        {
+            var color = new Color(1f, 0.75f, 0.3f, 1f);
+            if (keyInputPanel.activeSelf) { statusText.text = message; statusText.color = color; }
+            else if (demoExpiredPanel.activeSelf) { expiredStatusText.text = message; expiredStatusText.color = color; }
+            else if (licenseExpiredPanel.activeSelf) { licExpiredStatusText.text = message; licExpiredStatusText.color = color; }
+            else if (welcomePanel.activeSelf && welcomeInfoText != null)
+            {
+                welcomeInfoText.text = message;
+                welcomeInfoText.color = color;
+                welcomeInfoText.fontStyle = FontStyles.Normal;
+            }
+        }
+
+        /// <summary>
+        /// Store build with enforceEntitlement = true and a failed app-ownership check: the
+        /// welcome panel without its buttons, with the reason. The manager quits shortly after.
+        /// </summary>
+        public void ShowEntitlementBlocked(string message)
+        {
+            ShowWelcome();
+            if (welcomeBtnContainer != null) welcomeBtnContainer.SetActive(false);
+            if (welcomeInfoText != null)
+            {
+                welcomeInfoText.text = message;
+                welcomeInfoText.color = COLOR_ERROR;
+                welcomeInfoText.fontStyle = FontStyles.Bold;
+            }
         }
 
         /// <summary>Hides all UI (license valid or demo running).</summary>
@@ -504,14 +626,14 @@ namespace VRLicensing
                 size: new Vector2(500, 30), pos: new Vector2(0, -85));
 
             // Buttons container
-            var btnContainer = CreatePanel("BtnContainer", panelRt, Color.clear);
-            var btnContRt = btnContainer.GetComponent<RectTransform>();
+            welcomeBtnContainer = CreatePanel("BtnContainer", panelRt, Color.clear);
+            var btnContRt = welcomeBtnContainer.GetComponent<RectTransform>();
             btnContRt.anchorMin = new Vector2(0.5f, 0.5f);
             btnContRt.anchorMax = new Vector2(0.5f, 0.5f);
             btnContRt.sizeDelta = new Vector2(400, 160);
             btnContRt.anchoredPosition = new Vector2(0, -10);
 
-            var vlg = btnContainer.AddComponent<VerticalLayoutGroup>();
+            var vlg = welcomeBtnContainer.AddComponent<VerticalLayoutGroup>();
             vlg.spacing = 12;
             vlg.childAlignment = TextAnchor.MiddleCenter;
             vlg.childForceExpandWidth = true;
@@ -542,6 +664,8 @@ namespace VRLicensing
                 "", 12, FontStyles.Italic, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 0f), pivot: new Vector2(0.5f, 0f),
                 size: new Vector2(400, 25), pos: new Vector2(0, 20));
+
+            CreateDeviceCodeFooter(panelRt);
         }
 
         // ─────────────────── KEY INPUT PANEL ───────────────────
@@ -599,6 +723,8 @@ namespace VRLicensing
                 COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnBackClicked,
                 anchorAtBottom: true);
 
+            CreateDeviceCodeFooter(panelRt);
+
             keyInputPanel.SetActive(false);
         }
 
@@ -641,43 +767,316 @@ namespace VRLicensing
                 size: new Vector2(820, 30), pos: new Vector2(0, -74));
 
             // Vertical divider between the two columns
-            var divider = CreatePanel("ExpDivider", panelRt, COLOR_TEXT_DIM * 0.4f);
+            expDivider = CreateDivider("ExpDivider", panelRt);
+
+            // ── Left column: how to get access ──
+            // Store build: Meta subscription plans (no URL, QR, external price or promo —
+            // App Policies 1.1). Direct APK: the web purchase CTA, or the neutral hint.
+            if (storeOffersEnabled)
+                demoStoreColumn = BuildStoreColumn(panelRt, -COLUMN_X, "ExpStore");
+            else if (config.showPurchaseCta)
+                BuildPurchaseCta(panelRt, columnX: -COLUMN_X);
+            else
+                BuildOrganisationKeyHint(panelRt, columnX: -COLUMN_X);
+
+            // ── Right column: redeem an existing key ──
+            // Built inside its own container so it can slide to the centre when the store
+            // column has nothing to offer (no SKUs yet, store unavailable…).
+            expKeyColumn = CreateColumn("ExpKeyColumn", panelRt, COLUMN_X);
+
+            CreateTMPText("ExpRedeemTitle", expKeyColumn,
+                "Already have a license key?",
+                16, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
+                size: new Vector2(410, 26), pos: new Vector2(0, 85));
+
+            expiredKeyField = BuildKeyField("ExpKeyField", expKeyColumn, new Vector2(0, 25), width: 400f);
+
+            expiredActivateButton = CreatePositionedButton("ExpActivateBtn", expKeyColumn,
+                "Activate License", new Vector2(260, 42), new Vector2(0, -40),
+                COLOR_ACCENT, COLOR_ACCENT_HOVER, OnExpiredActivateClicked);
+            expiredActivateButtonText = expiredActivateButton.GetComponentInChildren<TextMeshProUGUI>();
+
+            // Scan QR button — captured so it can be hidden on unsupported headsets
+            scanButtons.Add(CreatePositionedButton("ExpScanQR", expKeyColumn,
+                "Scan QR", new Vector2(260, 35), new Vector2(0, -95),
+                COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnScanQRClicked).gameObject);
+
+            expiredStatusText = CreateTMPText("ExpStatusText", expKeyColumn,
+                "", 13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
+                size: new Vector2(410, 40), pos: new Vector2(0, -145));
+
+            CreateDeviceCodeFooter(panelRt);
+
+            demoExpiredPanel.SetActive(false);
+        }
+
+        // ─────────────────── STORE SUBSCRIPTION COLUMN (v1.12) ───────────────────
+
+        /// <summary>
+        /// Left column of the expired panels in Meta Horizon Store builds: one button per
+        /// configured subscription SKU, labelled with the term and the store's own localized
+        /// price. Buttons stay hidden until the store reports the products (see
+        /// <see cref="PopulateStoreColumn"/>); if it reports none, the column collapses and
+        /// the key column takes the centre.
+        /// </summary>
+        private StoreColumn BuildStoreColumn(RectTransform panelRt, float x, string prefix)
+        {
+            var col = new StoreColumn();
+            col.rt = CreateColumn(prefix + "Column", panelRt, x);
+            col.root = col.rt.gameObject;
+
+            col.title = CreateTMPText(prefix + "Title", col.rt,
+                "Unlock the full course",
+                16, FontStyles.Bold, COLOR_GREEN, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
+                size: new Vector2(410, 26), pos: new Vector2(0, 85));
+
+            col.subtitle = CreateTMPText(prefix + "Subtitle", col.rt,
+                "Subscribe with your Meta account",
+                12, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
+                size: new Vector2(410, 20), pos: new Vector2(0, 62));
+
+            string[] skus = config.storeSkus.All;
+            float[] ys = { 28f, -22f, -72f };
+            for (int i = 0; i < 3; i++)
+            {
+                int index = i;
+                col.skus[i] = skus[i];
+                Button btn = CreatePositionedButton(prefix + "Plan" + i, col.rt,
+                    StoreSkus.TermLabels[i], new Vector2(300, 42), new Vector2(0, ys[i]),
+                    COLOR_ACCENT, COLOR_ACCENT_HOVER, () => OnStoreBuyClicked(col, index));
+                col.buttons[i] = btn;
+                col.labels[i] = btn.GetComponentInChildren<TextMeshProUGUI>();
+                btn.gameObject.SetActive(false);
+            }
+
+            col.status = CreateTMPText(prefix + "Status", col.rt,
+                "", 12, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
+                size: new Vector2(410, 44), pos: new Vector2(0, -125));
+
+            return col;
+        }
+
+        private void StartPopulate(StoreColumn col, GameObject divider, RectTransform keyColumn)
+        {
+            if (col == null || col.root == null) return;
+            if (col.populate != null) StopCoroutine(col.populate);
+            col.populate = StartCoroutine(PopulateStoreColumn(col, divider, keyColumn));
+        }
+
+        /// <summary>
+        /// Asks the manager what the store offers. Meta requires checking the viewer's current
+        /// subscription before showing plans: if one exists it is re-verified instead.
+        /// </summary>
+        private IEnumerator PopulateStoreColumn(StoreColumn col, GameObject divider, RectTransform keyColumn)
+        {
+            if (!col.collapsed) ExpandStoreColumn(col, divider, keyColumn);
+            SetStoreButtons(col, interactable: false, hideAll: true);
+            SetStoreStatus(col, "Loading plans…", COLOR_TEXT_DIM);
+
+            if (manager == null)
+            {
+                CollapseStoreColumn(col, divider, keyColumn, "no license manager");
+                yield break;
+            }
+
+            StoreOffersResult result = null;
+            yield return manager.RefreshStoreOffers(r => result = r);
+            if (col.root == null || result == null) yield break;
+
+            if (result.existingSubscription != null)
+            {
+                ExpandStoreColumn(col, divider, keyColumn);
+                SetStoreStatus(col, "An active subscription was found on this Meta account. Verifying…", COLOR_TEXT_DIM);
+                manager.VerifyStoreSubscription((ok, err) =>
+                {
+                    if (col.root == null) return;
+                    if (ok)
+                    {
+                        ShowSuccess("Subscription verified");
+                        ShowSubscribed(false);
+                    }
+                    else SetStoreStatus(col, err, COLOR_ERROR);
+                });
+                yield break;
+            }
+
+            if (result.error != null)
+            {
+                CollapseStoreColumn(col, divider, keyColumn, result.error);
+                yield break;
+            }
+
+            int visible = 0;
+            for (int i = 0; i < 3; i++)
+            {
+                StoreProductInfo product = FindProduct(result.products, col.skus[i]);
+                bool show = product != null && !string.IsNullOrEmpty(product.formattedPrice);
+                col.buttons[i].gameObject.SetActive(show);
+                col.buttons[i].interactable = show;
+                if (!show) continue;
+                col.labels[i].text = $"{StoreSkus.TermLabels[i]}  ·  {product.formattedPrice}";
+                visible++;
+            }
+
+            if (visible == 0)
+            {
+                CollapseStoreColumn(col, divider, keyColumn,
+                    $"the store returned no products for SKUs [{string.Join(", ", config.storeSkus.Configured)}]");
+                yield break;
+            }
+
+            ExpandStoreColumn(col, divider, keyColumn);
+            SetStoreStatus(col, "Billed through your Meta account. Manage or cancel anytime in your Meta settings.", COLOR_TEXT_DIM);
+        }
+
+        private void OnStoreBuyClicked(StoreColumn col, int index)
+        {
+            string sku = col.skus[index];
+            if (string.IsNullOrEmpty(sku) || manager == null) return;
+
+            SetStoreButtons(col, interactable: false, hideAll: false);
+            SetStoreStatus(col, "Opening Meta checkout…", COLOR_TEXT_DIM);
+
+            manager.SubscribeViaStore(sku, (ok, message) =>
+            {
+                if (col.root == null) return;
+                SetStoreButtons(col, interactable: true, hideAll: false);
+                if (ok)
+                {
+                    ShowSuccess("Subscription activated");
+                    ShowSubscribed(false);
+                }
+                else
+                {
+                    bool cancelled = message == "Checkout cancelled.";
+                    SetStoreStatus(col, message, cancelled ? COLOR_TEXT_DIM : COLOR_ERROR);
+                }
+            });
+        }
+
+        private void CollapseStoreColumn(StoreColumn col, GameObject divider, RectTransform keyColumn, string reason)
+        {
+            if (!col.collapsed)
+                Debug.Log($"[VR Licensing] Store plans hidden — {reason}. Showing the license-key column only.");
+            col.collapsed = true;
+            col.root.SetActive(false);
+            if (divider != null) divider.SetActive(false);
+            if (keyColumn != null) keyColumn.anchoredPosition = new Vector2(0f, keyColumn.anchoredPosition.y);
+        }
+
+        private void ExpandStoreColumn(StoreColumn col, GameObject divider, RectTransform keyColumn)
+        {
+            col.collapsed = false;
+            col.root.SetActive(true);
+            if (divider != null) divider.SetActive(true);
+            if (keyColumn != null) keyColumn.anchoredPosition = new Vector2(COLUMN_X, keyColumn.anchoredPosition.y);
+        }
+
+        private static void SetStoreButtons(StoreColumn col, bool interactable, bool hideAll)
+        {
+            for (int i = 0; i < col.buttons.Length; i++)
+            {
+                Button b = col.buttons[i];
+                if (b == null) continue;
+                if (hideAll) b.gameObject.SetActive(false);
+                b.interactable = interactable;
+            }
+        }
+
+        private static void SetStoreStatus(StoreColumn col, string message, Color color)
+        {
+            if (col.status == null) return;
+            col.status.text = message ?? "";
+            col.status.color = color;
+        }
+
+        private static StoreProductInfo FindProduct(System.Collections.Generic.List<StoreProductInfo> products, string sku)
+        {
+            if (products == null || string.IsNullOrEmpty(sku)) return null;
+            foreach (var p in products)
+                if (p != null && string.Equals(p.sku, sku, StringComparison.OrdinalIgnoreCase)) return p;
+            return null;
+        }
+
+        // ─────────────────── Column / divider / device code helpers ───────────────────
+
+        private GameObject CreateDivider(string name, RectTransform panelRt)
+        {
+            var divider = CreatePanel(name, panelRt, COLOR_TEXT_DIM * 0.4f);
             var divRt = divider.GetComponent<RectTransform>();
             divRt.anchorMin = new Vector2(0.5f, 0.5f);
             divRt.anchorMax = new Vector2(0.5f, 0.5f);
             divRt.sizeDelta = new Vector2(2, 250);
             divRt.anchoredPosition = new Vector2(0, -30);
+            return divider;
+        }
 
-            if (config.showPurchaseCta)
-                BuildPurchaseCta(panelRt, columnX: -225f);
-            else
-                BuildOrganisationKeyHint(panelRt, columnX: -225f);
+        /// <summary>
+        /// Invisible container centred at (x, 0) of the panel: children positioned relative to
+        /// it land exactly where the old absolute (x + dx, dy) positions did.
+        /// </summary>
+        private RectTransform CreateColumn(string name, RectTransform panelRt, float x)
+        {
+            var go = CreatePanel(name, panelRt, Color.clear);
+            var rt = go.GetComponent<RectTransform>();
+            rt.anchorMin = new Vector2(0.5f, 0.5f);
+            rt.anchorMax = new Vector2(0.5f, 0.5f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta = new Vector2(440, 430);
+            rt.anchoredPosition = new Vector2(x, 0);
+            return rt;
+        }
 
-            // ── Right column: redeem an existing key ──
-            CreateTMPText("ExpRedeemTitle", panelRt,
-                "Already have a license key?",
-                16, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
-                anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
-                size: new Vector2(410, 26), pos: new Vector2(225, 85));
+        /// <summary>
+        /// "Device code: XXXXX-XXXXX" in small dim text at the bottom-right of a panel. The
+        /// code is what a user quotes to request deletion of their data (VRC.Quest.Privacy.4);
+        /// the raw device id is never shown.
+        /// </summary>
+        private void CreateDeviceCodeFooter(RectTransform panelRt)
+        {
+            var label = CreateTMPText("DeviceCode", panelRt, "",
+                10, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Right,
+                anchor: new Vector2(1f, 0f), pivot: new Vector2(1f, 0f),
+                size: new Vector2(360, 16), pos: new Vector2(-10, 5));
+            label.enableWordWrapping = false;
+            label.overflowMode = TextOverflowModes.Overflow;
+            deviceCodeLabels.Add(label);
+        }
 
-            expiredKeyField = BuildKeyField("ExpKeyField", panelRt, new Vector2(225, 25), width: 400f);
+        /// <summary>
+        /// Refreshes every footer in the current language. If the font cannot render the
+        /// localized label (e.g. no CJK/Devanagari glyphs in the default TMP font), the English
+        /// label is used rather than showing missing-glyph boxes.
+        /// </summary>
+        private void RefreshDeviceCodes()
+        {
+            string code = DeviceCode.Current;
+            string localized = LicenseStrings.DeviceCodeLine(code, LicenseStrings.CurrentLanguage);
+            string english = LicenseStrings.DeviceCodeLine(code, "en");
 
-            expiredActivateButton = CreatePositionedButton("ExpActivateBtn", panelRt,
-                "Activate License", new Vector2(260, 42), new Vector2(225, -40),
-                COLOR_ACCENT, COLOR_ACCENT_HOVER, OnExpiredActivateClicked);
-            expiredActivateButtonText = expiredActivateButton.GetComponentInChildren<TextMeshProUGUI>();
+            foreach (var label in deviceCodeLabels)
+            {
+                if (label == null) continue;
+                label.text = CanRender(label, localized) ? localized : english;
+            }
+        }
 
-            // Scan QR button — captured so it can be hidden on unsupported headsets
-            scanButtons.Add(CreatePositionedButton("ExpScanQR", panelRt,
-                "Scan QR", new Vector2(260, 35), new Vector2(225, -95),
-                COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnScanQRClicked).gameObject);
-
-            expiredStatusText = CreateTMPText("ExpStatusText", panelRt,
-                "", 13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
-                anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
-                size: new Vector2(410, 40), pos: new Vector2(225, -145));
-
-            demoExpiredPanel.SetActive(false);
+        private static bool CanRender(TMP_Text label, string text)
+        {
+            try
+            {
+                if (label.font == null) return true;
+                return label.font.HasCharacters(text, out System.Collections.Generic.List<char> _, true, true);
+            }
+            catch (Exception)
+            {
+                return true;
+            }
         }
 
         /// <summary>
@@ -882,7 +1281,9 @@ namespace VRLicensing
             var panelRt = licenseExpiredPanel.GetComponent<RectTransform>();
             panelRt.anchorMin = new Vector2(0.5f, 0.5f);
             panelRt.anchorMax = new Vector2(0.5f, 0.5f);
-            panelRt.sizeDelta = new Vector2(650, 400);
+            // Store builds: same two-column layout as the demo-expired panel (plans + key).
+            bool twoColumns = storeOffersEnabled;
+            panelRt.sizeDelta = twoColumns ? new Vector2(900, 430) : new Vector2(650, 400);
             panelRt.anchoredPosition = Vector2.zero;
 
             // Header with amber/orange warning color
@@ -899,35 +1300,67 @@ namespace VRLicensing
                 20, FontStyles.Bold, new Color(1f, 0.65f, 0.15f, 1f), TextAlignmentOptions.Center,
                 stretch: true, padding: new Vector4(20, 20, 0, 0));
 
-            // Message
-            CreateTMPText("LicExpMsg", panelRt,
-                config.showPurchaseCta
-                    ? $"Your license for {config.appDisplayName} has expired.\nRenew on the web portal or enter a new key."
-                    : $"Your license for {config.appDisplayName} has expired.\nAsk your organisation for a new key and enter it below.",
+            // Message (rewritten at show time with the actual reason: expired / revoked / store)
+            licExpMsgText = CreateTMPText("LicExpMsg", panelRt,
+                LicenseExpiredMessage(false, null),
                 13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
-                size: new Vector2(550, 45), pos: new Vector2(0, -72));
+                size: new Vector2(twoColumns ? 820 : 550, 45), pos: new Vector2(0, -72));
 
-            // Key fields
-            licExpiredKeyField = BuildKeyField("LicExpKeyField", panelRt, new Vector2(0, 10));
+            if (twoColumns)
+            {
+                licExpDivider = CreateDivider("LicExpDivider", panelRt);
+                licStoreColumn = BuildStoreColumn(panelRt, -COLUMN_X, "LicExpStore");
 
-            // Activate button
-            licExpiredActivateButton = CreatePositionedButton("LicExpActivateBtn", panelRt,
-                "Activate License", new Vector2(260, 42), new Vector2(0, -45),
-                COLOR_ACCENT, COLOR_ACCENT_HOVER, OnLicExpiredActivateClicked);
-            licExpiredActivateButtonText = licExpiredActivateButton.GetComponentInChildren<TextMeshProUGUI>();
+                licExpKeyColumn = CreateColumn("LicExpKeyColumn", panelRt, COLUMN_X);
 
-            // Status
-            licExpiredStatusText = CreateTMPText("LicExpStatusText", panelRt,
-                "", 13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
-                anchor: new Vector2(0.5f, 0f), pivot: new Vector2(0.5f, 0f),
-                size: new Vector2(500, 25), pos: new Vector2(0, 55));
+                CreateTMPText("LicExpRedeemTitle", licExpKeyColumn,
+                    "Enter a license key",
+                    16, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
+                    anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
+                    size: new Vector2(410, 26), pos: new Vector2(0, 85));
 
-            // Scan QR button — captured so it can be hidden on unsupported headsets
-            scanButtons.Add(CreatePositionedButton("LicExpScanQR", panelRt,
-                "Scan QR", new Vector2(260, 35), new Vector2(0, 18),
-                COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnScanQRClicked,
-                anchorAtBottom: true).gameObject);
+                licExpiredKeyField = BuildKeyField("LicExpKeyField", licExpKeyColumn, new Vector2(0, 25), width: 400f);
+
+                licExpiredActivateButton = CreatePositionedButton("LicExpActivateBtn", licExpKeyColumn,
+                    "Activate License", new Vector2(260, 42), new Vector2(0, -40),
+                    COLOR_ACCENT, COLOR_ACCENT_HOVER, OnLicExpiredActivateClicked);
+                licExpiredActivateButtonText = licExpiredActivateButton.GetComponentInChildren<TextMeshProUGUI>();
+
+                scanButtons.Add(CreatePositionedButton("LicExpScanQR", licExpKeyColumn,
+                    "Scan QR", new Vector2(260, 35), new Vector2(0, -95),
+                    COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnScanQRClicked).gameObject);
+
+                licExpiredStatusText = CreateTMPText("LicExpStatusText", licExpKeyColumn,
+                    "", 13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
+                    anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
+                    size: new Vector2(410, 40), pos: new Vector2(0, -145));
+            }
+            else
+            {
+                // Key fields
+                licExpiredKeyField = BuildKeyField("LicExpKeyField", panelRt, new Vector2(0, 10));
+
+                // Activate button
+                licExpiredActivateButton = CreatePositionedButton("LicExpActivateBtn", panelRt,
+                    "Activate License", new Vector2(260, 42), new Vector2(0, -45),
+                    COLOR_ACCENT, COLOR_ACCENT_HOVER, OnLicExpiredActivateClicked);
+                licExpiredActivateButtonText = licExpiredActivateButton.GetComponentInChildren<TextMeshProUGUI>();
+
+                // Status
+                licExpiredStatusText = CreateTMPText("LicExpStatusText", panelRt,
+                    "", 13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
+                    anchor: new Vector2(0.5f, 0f), pivot: new Vector2(0.5f, 0f),
+                    size: new Vector2(500, 25), pos: new Vector2(0, 55));
+
+                // Scan QR button — captured so it can be hidden on unsupported headsets
+                scanButtons.Add(CreatePositionedButton("LicExpScanQR", panelRt,
+                    "Scan QR", new Vector2(260, 35), new Vector2(0, 18),
+                    COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnScanQRClicked,
+                    anchorAtBottom: true).gameObject);
+            }
+
+            CreateDeviceCodeFooter(panelRt);
 
             licenseExpiredPanel.SetActive(false);
         }

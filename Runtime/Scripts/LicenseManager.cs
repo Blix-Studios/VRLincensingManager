@@ -1,5 +1,7 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
+using System.Globalization;
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -19,12 +21,27 @@ namespace VRLicensing
         /// <summary>License or demo has expired.</summary>
         Expired,
         /// <summary>Clock tampering detected, requires online verification.</summary>
-        ClockTampered
+        ClockTampered,
+        /// <summary>
+        /// Unlocked by a store subscription verified by the server (v1.12). Equivalent to
+        /// <see cref="Licensed"/> for gating; no client branding is applied.
+        /// </summary>
+        SubscribedViaStore
+    }
+
+    /// <summary>What the store currently offers / already granted to the signed-in user.</summary>
+    public sealed class StoreOffersResult
+    {
+        public List<StoreProductInfo> products = new List<StoreProductInfo>();
+        /// <summary>Active subscription the store already reports for this account, if any.</summary>
+        public StorePurchaseInfo existingSubscription;
+        public string error;
     }
 
     /// <summary>
     /// Main orchestrator for the VR licensing system.
-    /// Coordinates all subsystems: validation, storage, clock guard, session tracking, and demo mode.
+    /// Coordinates all subsystems: validation, storage, clock guard, session tracking, demo mode
+    /// and, in store builds (v1.12), the store platform (entitlement check + subscriptions).
     /// Attach this to the LicenseGateUI prefab.
     /// </summary>
     public class LicenseManager : MonoBehaviour
@@ -47,13 +64,35 @@ namespace VRLicensing
         private float fpsAccumulator;
         private int fpsFrameCount;
         private bool isLicenseExpiry; // true = license expired, false = demo expired
+        private bool isStoreExpiry;   // true = the store subscription cache ran out (v1.12)
+        private string licenseInvalidReason; // "expired", "revoked", "suspended"… for the expired panel
+        private string lastValidationCode;   // last code from validate_and_bind_license (ok / not_found / revoked / error…)
+
+        // ── Store platform (v1.12) ──
+        private IStorePlatformProvider storeProvider;
+        private StorePlatform effectiveStorePlatform = StorePlatform.None;
+        private string storeInitError;
+        private string storeEntitlementError;
+        private bool storeInitCompleted;
+        private StoreEntitlementData cachedStoreEntitlement;
+        private bool activatingStoreFromCache;
+        private string storeUserId;                 // Meta user id once the server verified it (phase B)
+        private List<StoreProductInfo> storeProducts; // per-session product cache
+        private readonly List<string> storeEvents = new List<string>(); // pending p_events (phase B)
+        private string pendingNotice;               // shown once on the next panel (e.g. offline notice)
+        private bool entitlementBlocked;
 
         private const string SESSION_COUNT_KEY = "vrl_session_count";
+        private const float STORE_INIT_TIMEOUT = 10f; // VRC.Quest.Security.1: entitlement within 10 s
+        private const float ENTITLEMENT_QUIT_DELAY = 10f;
 
         /// <summary>
         /// Current state of the licensing system.
         /// </summary>
         public LicenseState CurrentState { get; private set; } = LicenseState.Unlicensed;
+
+        /// <summary>True in both unlocked states: <see cref="LicenseState.Licensed"/> and <see cref="LicenseState.SubscribedViaStore"/>.</summary>
+        public bool IsUnlocked => CurrentState == LicenseState.Licensed || CurrentState == LicenseState.SubscribedViaStore;
 
         /// <summary>
         /// The active license data (null if unlicensed/demo).
@@ -88,6 +127,24 @@ namespace VRLicensing
         /// The configuration used by this manager.
         /// </summary>
         public LicenseConfig Config => config;
+
+        /// <summary>
+        /// The store platform this build actually behaves as: the configured one when its SDK
+        /// is present, otherwise <see cref="StorePlatform.None"/>.
+        /// </summary>
+        public StorePlatform EffectiveStorePlatform => effectiveStorePlatform;
+
+        /// <summary>Store provider in use, or null when <see cref="EffectiveStorePlatform"/> is None.</summary>
+        public IStorePlatformProvider StoreProvider => storeProvider;
+
+        /// <summary>Result of the store app-ownership check: true/false once done, null while unknown.</summary>
+        public bool? StoreEntitled => storeProvider != null ? storeProvider.IsEntitled : null;
+
+        /// <summary>The server-verified store subscription unlocking the app (null otherwise).</summary>
+        public StoreEntitlementData ActiveStoreEntitlement => cachedStoreEntitlement;
+
+        /// <summary>Privacy device code of this headset (XXXXX-XXXXX), see <see cref="VRLicensing.DeviceCode"/>.</summary>
+        public string DeviceCode => VRLicensing.DeviceCode.Current;
 
         /// <summary>
         /// Sets the code-generated UI builder. Called by LicenseBootstrapper.
@@ -126,6 +183,12 @@ namespace VRLicensing
         /// </summary>
         public event Action<Texture2D, Sprite> OnBrandingLogoReady;
 
+        /// <summary>Fired once the store app-ownership (entitlement) check finished: (entitled, error).</summary>
+        public event Action<bool, string> OnStoreEntitlementChecked;
+
+        /// <summary>Fired when a server-verified store subscription unlocks the app (fresh or from cache).</summary>
+        public event Action<StoreEntitlementData> OnStoreSubscriptionActivated;
+
         #endregion
 
         /// <summary>
@@ -141,6 +204,15 @@ namespace VRLicensing
 
             // Initialize the Supabase client
             supabaseClient.Initialize(config);
+
+            // Resolve the store platform (v1.12). Without the store SDK the build behaves as None.
+            ResolveStoreProvider();
+
+            // Development builds only: the raw id the RPCs send and the privacy code derived from
+            // it, so the server-side hash (over device_registry.device_unique_id) can be checked
+            // character by character against a real headset. Never logged in release builds.
+            if (Debug.isDebugBuild)
+                Debug.Log($"[VR Licensing] dev: device id '{VRLicensing.DeviceCode.RawDeviceId}' → device code {VRLicensing.DeviceCode.Current}");
 
             // Subscribe to demo expiration
             demoManager.OnDemoExpired += HandleDemoExpired;
@@ -176,6 +248,22 @@ namespace VRLicensing
                 sessionTracker = GetComponent<SessionTimeTracker>() ?? gameObject.AddComponent<SessionTimeTracker>();
             if (demoManager == null)
                 demoManager = GetComponent<DemoModeManager>() ?? gameObject.AddComponent<DemoModeManager>();
+        }
+
+        private void ResolveStoreProvider()
+        {
+            effectiveStorePlatform = StorePlatformRegistry.Effective(config.storePlatform);
+            if (config.storePlatform != StorePlatform.None && effectiveStorePlatform == StorePlatform.None)
+                Debug.LogWarning("[VR Licensing] " + StorePlatformRegistry.UnavailableReason(config.storePlatform));
+
+            storeProvider = effectiveStorePlatform != StorePlatform.None
+                ? StorePlatformRegistry.Create(effectiveStorePlatform)
+                : null;
+
+            if (storeProvider != null)
+                Debug.Log($"[VR Licensing] Store platform: {effectiveStorePlatform} " +
+                          $"(SKUs: {string.Join(", ", config.storeSkus.Configured)}; " +
+                          $"server verification {(StoreVerification.ServerEnabled ? "ON" : "OFF — phase B")})");
         }
 
         /// <summary>
@@ -238,6 +326,21 @@ namespace VRLicensing
                 clockGuard.UpdateHighestKnownTime();
             }
 
+            // Step 1b (v1.12): store platform init + app-ownership check, within 10 s.
+            // Never blocks builds that are not store builds (storeProvider == null).
+            yield return InitializeStorePlatform();
+
+            if (entitlementBlocked)
+            {
+                // Only with LicenseConfig.enforceEntitlement = true (published store builds).
+                SetState(LicenseState.Unlicensed, forceUpdate: true);
+                uiBuilder?.ShowEntitlementBlocked(
+                    "This app is not available for the signed-in Meta account.\n" +
+                    "Please install it from the Meta Horizon Store with the account that owns it.");
+                StartCoroutine(QuitAfter(ENTITLEMENT_QUIT_DELAY));
+                yield break;
+            }
+
             // Step 2: Try to load cached license
             cachedLicense = SecureLicenseStorage.LoadLicenseData();
 
@@ -249,10 +352,18 @@ namespace VRLicensing
                 yield break;
             }
 
+            // Step 2b (v1.12): cached store subscription, then (phase B) online verification.
+            bool storeUnlocked = false;
+            yield return TryUnlockFromStore(result => storeUnlocked = result);
+            if (storeUnlocked) yield break;
+
             if (cachedLicense != null && !cachedLicense.IsValid)
             {
-                Debug.Log("[VR Licensing] Cached license expired.");
+                // Any status other than "active" (expired, revoked, suspended, unknown…) lands here.
+                licenseInvalidReason = cachedLicense.InvalidReason;
+                Debug.Log($"[VR Licensing] Cached license not valid ({licenseInvalidReason}).");
                 isLicenseExpiry = true;
+                isStoreExpiry = false;
                 SecureLicenseStorage.ClearAll();
                 SecureLicenseStorage.MarkInitialized();
                 cachedLicense = null;
@@ -269,6 +380,7 @@ namespace VRLicensing
 
             yield return supabaseClient.GetDeviceStatus(
                 config.productId,
+                storeUserId, // null until the server verified a store account (phase B)
                 (status) => {
                     if (status != null && status.found)
                     {
@@ -303,6 +415,7 @@ namespace VRLicensing
             {
                 Debug.Log("[VR Licensing] Device demo has been blocked by admin.");
                 isLicenseExpiry = false;
+                isStoreExpiry = false;
                 SetState(LicenseState.Expired, forceUpdate: true);
                 OnDemoExpired?.Invoke();
                 yield break;
@@ -314,6 +427,7 @@ namespace VRLicensing
                 // Demo fully expired — must enter license key
                 Debug.Log("[VR Licensing] Demo expired. Awaiting license key.");
                 isLicenseExpiry = false;
+                isStoreExpiry = false;
                 SetState(LicenseState.Expired, forceUpdate: true);
                 OnDemoExpired?.Invoke();
             }
@@ -324,6 +438,350 @@ namespace VRLicensing
                 SetState(LicenseState.Unlicensed, forceUpdate: true);
             }
         }
+
+        #region Store platform (v1.12)
+
+        /// <summary>
+        /// Platform SDK init + app-ownership (entitlement) check with one shared 10 s budget.
+        /// Failures are logged and, unless <see cref="LicenseConfig.enforceEntitlement"/> is on,
+        /// the app simply continues in demo / license-key mode (development default).
+        /// </summary>
+        private IEnumerator InitializeStorePlatform()
+        {
+            if (storeProvider == null) yield break;
+
+            float deadline = Time.realtimeSinceStartup + STORE_INIT_TIMEOUT;
+
+            bool initDone = false, initOk = false;
+            string initError = null;
+            Coroutine initCo = StartCoroutine(storeProvider.Initialize((ok, err) => { initDone = true; initOk = ok; initError = err; }));
+            while (!initDone && Time.realtimeSinceStartup < deadline) yield return null;
+
+            if (!initDone)
+            {
+                StopCoroutine(initCo);
+                storeInitError = $"platform init timed out after {STORE_INIT_TIMEOUT:F0} s";
+            }
+            else if (!initOk)
+            {
+                storeInitError = initError ?? "platform init failed";
+            }
+
+            if (storeInitError != null)
+            {
+                Debug.LogWarning($"[VR Licensing] Store platform ({effectiveStorePlatform}) unavailable: {storeInitError}. " +
+                                 "Continuing without store features (no subscriptions offered this session).");
+                storeInitCompleted = true;
+                storeEntitlementError = storeInitError;
+                FinishEntitlement(false, storeInitError);
+                yield break;
+            }
+
+            bool entDone = false, entOk = false;
+            string entError = null;
+            Coroutine entCo = StartCoroutine(storeProvider.CheckEntitlement((ok, err) => { entDone = true; entOk = ok; entError = err; }));
+            while (!entDone && Time.realtimeSinceStartup < deadline) yield return null;
+
+            if (!entDone)
+            {
+                StopCoroutine(entCo);
+                entError = $"entitlement check timed out after {STORE_INIT_TIMEOUT:F0} s";
+            }
+
+            storeInitCompleted = true;
+            if (entOk)
+            {
+                Debug.Log($"[VR Licensing] Store entitlement check passed ({Time.realtimeSinceStartup:F1} s since start).");
+                FinishEntitlement(true, null);
+            }
+            else
+            {
+                storeEntitlementError = entError ?? "not entitled";
+                Debug.LogWarning($"[VR Licensing] Store entitlement check FAILED: {storeEntitlementError}. " +
+                                 (config.enforceEntitlement
+                                     ? "enforceEntitlement is ON — locking the app."
+                                     : "enforceEntitlement is OFF — continuing in demo / license-key mode " +
+                                       "(expected for sideloaded APKs on accounts that are not org members or test users)."));
+                FinishEntitlement(false, storeEntitlementError);
+            }
+        }
+
+        private void FinishEntitlement(bool entitled, string error)
+        {
+            entitlementBlocked = !entitled && config.enforceEntitlement;
+            OnStoreEntitlementChecked?.Invoke(entitled, error);
+        }
+
+        private IEnumerator QuitAfter(float seconds)
+        {
+            yield return new WaitForSecondsRealtime(seconds);
+            Debug.LogError("[VR Licensing] Entitlement check failed and enforceEntitlement is ON — quitting.");
+#if UNITY_EDITOR
+            UnityEditor.EditorApplication.isPlaying = false;
+#else
+            Application.Quit();
+#endif
+        }
+
+        /// <summary>
+        /// Spec §1.4 boot order after the cached key: cached store entitlement still valid →
+        /// unlock; otherwise (phase B) ask the server. A stale cache without network leaves the
+        /// app locked with the "internet needed" notice.
+        /// </summary>
+        private IEnumerator TryUnlockFromStore(Action<bool> onDone)
+        {
+            if (storeProvider == null || !storeProvider.IsInitialized)
+            {
+                onDone(false);
+                yield break;
+            }
+
+            StoreEntitlementData cached = SecureLicenseStorage.LoadStoreEntitlement();
+            bool hadStaleCache = false;
+
+            if (cached != null)
+            {
+                if (cached.IsCacheValid && cached.product_id == config.productId)
+                {
+                    Debug.Log($"[VR Licensing] Cached store subscription valid ({cached.sku}, {cached.status}, " +
+                              $"cache until {cached.cache_until}).");
+                    activatingStoreFromCache = true;
+                    ActivateStoreSubscription(cached);
+                    onDone(true);
+                    yield break;
+                }
+
+                Debug.Log("[VR Licensing] Cached store subscription needs re-verification " +
+                          $"(cache until {cached.cache_until}, status {cached.status}).");
+                hadStaleCache = true;
+                SecureLicenseStorage.ClearStoreEntitlement();
+            }
+
+            if (StoreVerification.ServerEnabled)
+            {
+                bool ok = false;
+                string err = null;
+                yield return VerifyStoreEntitlementOnline((success, error) => { ok = success; err = error; }, silent: true);
+                if (ok)
+                {
+                    onDone(true);
+                    yield break;
+                }
+                if (hadStaleCache)
+                {
+                    Debug.LogWarning($"[VR Licensing] Store subscription could not be re-verified: {err}");
+                    pendingNotice = "An internet connection is needed to verify your subscription.";
+                }
+            }
+            else if (hadStaleCache)
+            {
+                pendingNotice = "An internet connection is needed to verify your subscription.";
+            }
+
+            onDone(false);
+        }
+
+        private void ActivateStoreSubscription(StoreEntitlementData data)
+        {
+            cachedStoreEntitlement = data;
+            if (!string.IsNullOrEmpty(data.store_user_id)) storeUserId = data.store_user_id;
+            demoManager.StopDemo();
+            SetState(LicenseState.SubscribedViaStore);
+            sessionTracker.StartTracking();
+            clockGuard.UpdateHighestKnownTime();
+            OnStoreSubscriptionActivated?.Invoke(data);
+
+            Debug.Log($"[VR Licensing] Store subscription ACTIVE — {data.sku} ({data.status}), " +
+                      $"expires {data.expires_at}, offline cache until {data.cache_until}");
+
+            // No branding for individual subscribers. Report the session (and pending events).
+            StartCoroutine(ReportDemoUsage(null));
+        }
+
+        /// <summary>
+        /// What to show on the subscription column: the viewer's existing subscription (if the
+        /// store already reports one) and the configured products with their store prices.
+        /// Products are cached per session.
+        /// </summary>
+        public IEnumerator RefreshStoreOffers(Action<StoreOffersResult> onDone)
+        {
+            var result = new StoreOffersResult();
+
+            if (storeProvider == null || !storeProvider.IsInitialized)
+            {
+                result.error = storeInitError ?? "store platform not initialized";
+                onDone?.Invoke(result);
+                yield break;
+            }
+
+            string[] skus = config.storeSkus.Configured;
+            if (skus.Length == 0)
+            {
+                result.error = "no store SKUs configured in LicenseConfig.storeSkus";
+                onDone?.Invoke(result);
+                yield break;
+            }
+
+            // Meta requirement: check the viewer's current subscription BEFORE offering plans.
+            yield return storeProvider.GetActiveSubscription(skus, (purchase, err) =>
+            {
+                result.existingSubscription = purchase;
+                if (err != null) Debug.LogWarning($"[VR Licensing] Could not read store purchases: {err}");
+            });
+
+            if (storeProducts == null)
+            {
+                List<StoreProductInfo> fetched = null;
+                string fetchError = null;
+                yield return storeProvider.GetProducts(skus, (list, err) => { fetched = list; fetchError = err; });
+                if (fetchError != null) result.error = fetchError;
+                else storeProducts = fetched ?? new List<StoreProductInfo>();
+            }
+
+            result.products = storeProducts ?? new List<StoreProductInfo>();
+            onDone?.Invoke(result);
+        }
+
+        /// <summary>
+        /// Opens the store checkout for one SKU, then (phase B) asks the server to verify the
+        /// subscription and unlocks. Result: (success, message). A dismissed checkout is reported
+        /// as (false, "Checkout cancelled.").
+        /// </summary>
+        public void SubscribeViaStore(string sku, Action<bool, string> onResult)
+        {
+            if (storeProvider == null || !storeProvider.IsInitialized)
+            {
+                onResult?.Invoke(false, "The store is not available right now.");
+                return;
+            }
+            StartCoroutine(SubscribeViaStoreRoutine(sku, onResult));
+        }
+
+        private IEnumerator SubscribeViaStoreRoutine(string sku, Action<bool, string> onResult)
+        {
+            QueueStoreEvent("checkout_opened", sku);
+
+            StoreCheckoutResult checkout = null;
+            yield return storeProvider.LaunchCheckout(sku, r => checkout = r);
+
+            if (checkout == null || checkout.outcome == StoreCheckoutOutcome.Cancelled)
+            {
+                QueueStoreEvent("checkout_cancelled", sku);
+                Debug.Log($"[VR Licensing] Store checkout cancelled ({sku}).");
+                onResult?.Invoke(false, "Checkout cancelled.");
+                yield break;
+            }
+
+            if (checkout.outcome == StoreCheckoutOutcome.Failed)
+            {
+                QueueStoreEvent("checkout_cancelled", sku);
+                Debug.LogWarning($"[VR Licensing] Store checkout failed ({sku}): {checkout.error}");
+                onResult?.Invoke(false, "Checkout failed: " + checkout.error);
+                yield break;
+            }
+
+            QueueStoreEvent("checkout_completed", sku);
+            Debug.Log($"[VR Licensing] Store checkout completed ({sku}, purchase {checkout.purchase?.purchaseId}).");
+
+            yield return VerifyStoreEntitlementOnline(onResult, silent: false);
+        }
+
+        /// <summary>
+        /// Re-verifies an existing store subscription with the server (used when the store
+        /// already reports one for this account, or after the offline cache ran out).
+        /// </summary>
+        public void VerifyStoreSubscription(Action<bool, string> onResult)
+        {
+            StartCoroutine(VerifyStoreEntitlementOnline(onResult, silent: false));
+        }
+
+        /// <summary>
+        /// Server-authoritative verification (spec §1.1): store user id + one-time proof →
+        /// verify-store-entitlement → encrypted cache → <see cref="LicenseState.SubscribedViaStore"/>.
+        /// Gated by <see cref="StoreVerification.ServerEnabled"/> (phase B).
+        /// </summary>
+        private IEnumerator VerifyStoreEntitlementOnline(Action<bool, string> onResult, bool silent)
+        {
+            if (!StoreVerification.ServerEnabled)
+            {
+                Debug.LogWarning("[VR Licensing] Store verification is disabled in this build (phase B not enabled) — " +
+                                 "the subscription cannot unlock the app until the server side is deployed.");
+                onResult?.Invoke(false, "Subscription verification is not available in this build yet.");
+                yield break;
+            }
+
+            if (storeProvider == null || !storeProvider.IsInitialized)
+            {
+                onResult?.Invoke(false, "The store is not available right now.");
+                yield break;
+            }
+
+            string userId = null, nonce = null, identityError = null;
+            yield return storeProvider.GetUserIdentity((u, n, e) => { userId = u; nonce = n; identityError = e; });
+
+            if (string.IsNullOrEmpty(userId) || string.IsNullOrEmpty(nonce))
+            {
+                if (!silent) Debug.LogWarning($"[VR Licensing] Could not identify the store account: {identityError}");
+                onResult?.Invoke(false, "Could not identify your Meta account. Check your connection and try again.");
+                yield break;
+            }
+
+            StoreVerifyResult verify = null;
+            string verifyError = null;
+            yield return supabaseClient.VerifyStoreEntitlement(
+                userId, nonce, config.productId, VRLicensing.DeviceCode.RawDeviceId, storeProvider.PlatformId,
+                r => verify = r, e => verifyError = e);
+
+            if (verify == null)
+            {
+                if (!silent) Debug.LogWarning($"[VR Licensing] Store verification failed: {verifyError}");
+                onResult?.Invoke(false, "Could not verify the subscription. Check your connection and try again.");
+                yield break;
+            }
+
+            storeUserId = userId;
+
+            if (!verify.entitled)
+            {
+                SecureLicenseStorage.ClearStoreEntitlement();
+                Debug.Log($"[VR Licensing] Server reports no active subscription for this account (status: {verify.status}).");
+                onResult?.Invoke(false, "No active subscription was found for this Meta account.");
+                yield break;
+            }
+
+            var data = StoreEntitlementData.FromServer(verify, storeProvider.PlatformId, userId,
+                config.productId, config.maxOfflineHours);
+            SecureLicenseStorage.SaveStoreEntitlement(data);
+            QueueStoreEvent("subscription_verified", verify.sku);
+
+            activatingStoreFromCache = false;
+            ActivateStoreSubscription(data);
+            onResult?.Invoke(true, null);
+        }
+
+        /// <summary>Queues a store analytics event for the next report_device_session (phase B).</summary>
+        private void QueueStoreEvent(string name, string sku)
+        {
+            string at = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+            storeEvents.Add("{\"name\":\"" + name + "\",\"sku\":\"" + (sku ?? "") + "\",\"at\":\"" + at + "\"}");
+            if (storeEvents.Count > 50) storeEvents.RemoveAt(0);
+        }
+
+        /// <summary>Returns the pending events as a JSON array (and clears them), or null.</summary>
+        private string DrainStoreEvents()
+        {
+            if (storeEvents.Count == 0) return null;
+            if (!StoreVerification.ServerEnabled)
+            {
+                storeEvents.Clear(); // nowhere to send them yet
+                return null;
+            }
+            string json = "[" + string.Join(",", storeEvents) + "]";
+            storeEvents.Clear();
+            return json;
+        }
+
+        #endregion
 
         public void SubmitLicenseKey(string licenseKey, Action<bool, string> onResult = null)
         {
@@ -345,18 +803,33 @@ namespace VRLicensing
 
             // Validation AND device binding happen atomically server-side via RPC.
             // The server rejects keys bound to another headset (code: bound_other_device).
+            lastValidationCode = null;
             yield return supabaseClient.ValidateAndBindLicense(
                 licenseKey,
                 config.productId,
                 SystemInfo.deviceUniqueIdentifier,
-                (license) => { validLicense = license; },
-                (code, error) => { errorMessage = error; }
+                (license) => { validLicense = license; lastValidationCode = "ok"; },
+                (code, error) => { errorMessage = error; lastValidationCode = code ?? "error"; }
             );
 
             if (validLicense == null)
             {
                 OnValidationError?.Invoke(errorMessage ?? "Unknown error");
                 onResult?.Invoke(false, errorMessage ?? "Error validating the license.");
+                yield break;
+            }
+
+            // Defensive: the server should only return active licenses, but a record whose
+            // status is anything else (revoked, suspended, a status added later…) must never
+            // unlock. Treat it exactly like a rejection, with the status as the reason.
+            if (!validLicense.IsValid)
+            {
+                string reason = validLicense.InvalidReason;
+                lastValidationCode = reason;
+                string msg = $"This license is not active ({reason}). Ask your organisation for a new key.";
+                Debug.LogWarning($"[VR Licensing] Server returned a non-active license ({reason}) — rejected.");
+                OnValidationError?.Invoke(msg);
+                onResult?.Invoke(false, msg);
                 yield break;
             }
 
@@ -383,10 +856,10 @@ namespace VRLicensing
                 $"Expires: {license.expires_at}, Remaining: {license.TimeRemaining}");
 
             // Fetch branding data from the web portal (non-blocking)
-            StartCoroutine(FetchAndCacheBranding(license.id));
+            StartCoroutine(FetchAndCacheBranding(license));
 
             // Send device telemetry (fire-and-forget, non-blocking)
-            StartCoroutine(SendSessionTelemetry(license.id));
+            StartCoroutine(SendSessionTelemetry(license));
 
             // Report session to server (delta since last report; refreshes last_license_key)
             StartCoroutine(ReportDemoUsage(license.license_key));
@@ -394,45 +867,65 @@ namespace VRLicensing
 
         /// <summary>
         /// Fetches branding set by the client on the web portal and caches it.
-        /// Other scripts can read LicenseManager.ActiveBranding at any time.
+        /// v1.12: through the get_license_branding RPC; falls back to the direct table read
+        /// while the function is not deployed. Other scripts can read
+        /// LicenseManager.ActiveBranding at any time.
         /// </summary>
-        private IEnumerator FetchAndCacheBranding(string licenseId)
+        private IEnumerator FetchAndCacheBranding(LicenseData license)
         {
-            yield return supabaseClient.FetchBranding(
-                licenseId,
-                (branding) =>
+            bool functionMissing = false;
+            bool handled = false;
+
+            yield return supabaseClient.FetchBrandingRpc(
+                license.license_key, config.productId, SystemInfo.deviceUniqueIdentifier,
+                (branding) => { handled = true; ApplyBranding(branding); },
+                (missing, error) =>
                 {
-                    cachedBranding = branding;
-                    OnBrandingLoaded?.Invoke(branding);
-
-                    if (branding != null && branding.HasBranding)
+                    functionMissing = missing;
+                    if (!missing)
                     {
-                        Debug.Log($"[VR Licensing] Client branding: \"{branding.brand_name}\"");
+                        handled = true;
+                        Debug.LogWarning($"[VR Licensing] Could not fetch branding: {error}");
+                        ApplyBranding(null);
+                    }
+                });
 
-                        // Download logo image if URL is provided
-                        if (!string.IsNullOrEmpty(branding.logo_url))
-                        {
-                            StartCoroutine(DownloadBrandingLogo(branding.logo_url));
-                        }
-                        else
-                        {
-                            OnBrandingLogoReady?.Invoke(null, null);
-                        }
-                    }
-                    else
-                    {
-                        Debug.Log("[VR Licensing] No client branding configured — using defaults.");
-                        OnBrandingLogoReady?.Invoke(null, null);
-                    }
-                },
+            if (handled) yield break;
+
+            if (functionMissing)
+                Debug.Log("[VR Licensing] get_license_branding not deployed yet — falling back to the direct read.");
+
+            yield return supabaseClient.FetchBranding(
+                license.id,
+                ApplyBranding,
                 (error) =>
                 {
                     Debug.LogWarning($"[VR Licensing] Could not fetch branding: {error}");
-                    cachedBranding = null;
-                    OnBrandingLoaded?.Invoke(null);
-                    OnBrandingLogoReady?.Invoke(null, null);
+                    ApplyBranding(null);
                 }
             );
+        }
+
+        private void ApplyBranding(BrandingData branding)
+        {
+            cachedBranding = branding;
+            OnBrandingLoaded?.Invoke(branding);
+
+            if (branding != null && branding.HasBranding)
+            {
+                Debug.Log($"[VR Licensing] Client branding: \"{branding.brand_name}\"");
+
+                // Download logo image if URL is provided
+                if (!string.IsNullOrEmpty(branding.logo_url))
+                    StartCoroutine(DownloadBrandingLogo(branding.logo_url));
+                else
+                    OnBrandingLogoReady?.Invoke(null, null);
+            }
+            else
+            {
+                Debug.Log("[VR Licensing] No client branding configured — using defaults.");
+                OnBrandingLogoReady?.Invoke(null, null);
+            }
         }
 
         /// <summary>
@@ -481,21 +974,30 @@ namespace VRLicensing
 
         /// <summary>
         /// Collects device data and sends it to the telemetry table.
+        /// v1.12: through the report_telemetry RPC, with a fallback to the direct insert while
+        /// the function is not deployed. Store-subscribed sessions (no key) do not call this;
+        /// they are covered by report_device_session.
         /// </summary>
-        private IEnumerator SendSessionTelemetry(string licenseId)
+        private IEnumerator SendSessionTelemetry(LicenseData license)
         {
             float demoUsed = SecureLicenseStorage.GetDemoUsedSeconds();
             float avgFps = fpsFrameCount > 0 ? fpsAccumulator / fpsFrameCount : 0f;
 
             var payload = TelemetryCollector.Collect(
-                licenseId: licenseId,
+                licenseId: license.id,
                 sessionDuration: sessionTracker != null ? SecureLicenseStorage.GetSessionUsedSeconds() : 0f,
                 demoUsed: demoUsed,
                 sessionCount: sessionCount,
                 avgFps: avgFps
             );
 
-            yield return supabaseClient.SendTelemetry(payload);
+            bool fallback = false;
+            yield return supabaseClient.SendTelemetryRpc(
+                license.license_key, config.productId, SystemInfo.deviceUniqueIdentifier, payload,
+                () => fallback = true);
+
+            if (fallback)
+                yield return supabaseClient.SendTelemetry(payload);
         }
 
         /// <summary>
@@ -513,8 +1015,10 @@ namespace VRLicensing
                 // Check if license has expired since last frame
                 if (!cachedLicense.IsValid)
                 {
-                    Debug.Log("[VR Licensing] License has expired during session.");
+                    licenseInvalidReason = cachedLicense.InvalidReason;
+                    Debug.Log($"[VR Licensing] License stopped being valid during the session ({licenseInvalidReason}).");
                     isLicenseExpiry = true;
+                    isStoreExpiry = false;
                     sessionTracker.StopTracking();
                     SetState(LicenseState.Expired);
                     OnLicenseExpired?.Invoke();
@@ -522,6 +1026,25 @@ namespace VRLicensing
                 }
 
                 // Update clock guard periodically (every frame is fine, it's cheap)
+                clockGuard.UpdateHighestKnownTime();
+            }
+
+            if (CurrentState == LicenseState.SubscribedViaStore && cachedStoreEntitlement != null)
+            {
+                // The offline cache ran out (term ended, or maxOfflineHours without the server).
+                if (!cachedStoreEntitlement.IsCacheValid)
+                {
+                    Debug.Log("[VR Licensing] Store subscription cache expired during session — re-verification needed.");
+                    isLicenseExpiry = true;
+                    isStoreExpiry = true;
+                    sessionTracker.StopTracking();
+                    cachedStoreEntitlement = null;
+                    SecureLicenseStorage.ClearStoreEntitlement();
+                    SetState(LicenseState.Expired);
+                    OnLicenseExpired?.Invoke();
+                    return;
+                }
+
                 clockGuard.UpdateHighestKnownTime();
             }
 
@@ -546,6 +1069,8 @@ namespace VRLicensing
             if (demoUsed >= config.demoDurationSeconds)
             {
                 Debug.Log("[VR Licensing] Cannot start demo — already expired.");
+                isLicenseExpiry = false;
+                isStoreExpiry = false;
                 SetState(LicenseState.Expired);
                 OnDemoExpired?.Invoke();
                 return;
@@ -567,12 +1092,47 @@ namespace VRLicensing
             {
                 StartCoroutine(ValidateKeyOnline(cachedLicense.license_key, (success, error) =>
                 {
-                    if (!success)
+                    if (success) return;
+
+                    // "error" = could not reach / parse the server: keep the cached license.
+                    // Anything else is the server's verdict (revoked, expired, bound elsewhere,
+                    // not found…): the cached license must stop unlocking the app right away.
+                    if (lastValidationCode == null || lastValidationCode == "error")
                     {
-                        Debug.LogWarning($"[VR Licensing] Re-validation failed: {error}");
+                        Debug.LogWarning($"[VR Licensing] Re-validation could not complete: {error}");
+                        return;
                     }
+
+                    Debug.LogWarning($"[VR Licensing] Server rejected the cached license ({lastValidationCode}): {error}");
+                    RevokeCachedLicense(lastValidationCode, error);
                 }));
             }
+            else if (CurrentState == LicenseState.SubscribedViaStore)
+            {
+                VerifyStoreSubscription((success, error) =>
+                {
+                    if (!success) Debug.LogWarning($"[VR Licensing] Store re-verification failed: {error}");
+                });
+            }
+        }
+
+        /// <summary>
+        /// The server said the cached license is no longer good (revoked, expired, re-bound…):
+        /// drop it and show the license-expired panel with the server's message.
+        /// </summary>
+        private void RevokeCachedLicense(string code, string serverMessage)
+        {
+            sessionTracker.StopTracking();
+            SecureLicenseStorage.ClearAll();
+            SecureLicenseStorage.MarkInitialized();
+            cachedLicense = null;
+            cachedBranding = null;
+            isLicenseExpiry = true;
+            isStoreExpiry = false;
+            licenseInvalidReason = code;
+            pendingNotice = string.IsNullOrEmpty(serverMessage) ? null : serverMessage;
+            SetState(LicenseState.Expired, forceUpdate: true);
+            OnLicenseExpired?.Invoke();
         }
 
         /// <summary>
@@ -585,6 +1145,7 @@ namespace VRLicensing
             demoManager.StopDemo();
             SecureLicenseStorage.ClearAll();
             cachedLicense = null;
+            cachedStoreEntitlement = null;
             SetState(LicenseState.Unlicensed);
             Debug.Log("[VR Licensing] License reset.");
         }
@@ -624,9 +1185,12 @@ namespace VRLicensing
                 case LicenseState.Licensed:
                     uiBuilder.ShowLicensed(activatingFromCache);
                     break;
+                case LicenseState.SubscribedViaStore:
+                    uiBuilder.ShowSubscribed(activatingStoreFromCache);
+                    break;
                 case LicenseState.Expired:
                     if (isLicenseExpiry)
-                        uiBuilder.ShowLicenseExpired();
+                        uiBuilder.ShowLicenseExpired(isStoreExpiry, licenseInvalidReason);
                     else
                         uiBuilder.ShowDemoExpired();
                     break;
@@ -635,11 +1199,20 @@ namespace VRLicensing
                     uiBuilder.ShowWelcome();
                     break;
             }
+
+            // One-shot notice (e.g. "internet needed to verify your subscription") on the panel
+            // the user is now looking at.
+            if (pendingNotice != null && (state == LicenseState.Unlicensed || state == LicenseState.Expired))
+            {
+                uiBuilder.ShowNotice(pendingNotice);
+                pendingNotice = null;
+            }
         }
 
         private void HandleDemoExpired()
         {
             isLicenseExpiry = false;
+            isStoreExpiry = false;
             SetState(LicenseState.Expired);
             sessionTracker.StopTracking();
             // Push the demo time consumed this session to the server immediately.
@@ -663,6 +1236,7 @@ namespace VRLicensing
         /// never lowers the counter). Keeps <see cref="serverReportedDemo"/> in sync so
         /// repeated calls only send newly-consumed time, and adopts the server total if
         /// it is ahead (e.g. usage from another session / anti-wipe).
+        /// v1.12: also flushes pending store analytics events (p_events, phase B).
         /// </summary>
         private IEnumerator ReportDemoUsage(string lastLicenseKey)
         {
@@ -681,7 +1255,8 @@ namespace VRLicensing
                             SecureLicenseStorage.SetDemoUsedSeconds(status.demo_used_seconds);
                     }
                 },
-                (error) => { Debug.LogWarning($"[VR Licensing] Session report failed: {error}"); }
+                (error) => { Debug.LogWarning($"[VR Licensing] Session report failed: {error}"); },
+                DrainStoreEvents()
             );
         }
     }
