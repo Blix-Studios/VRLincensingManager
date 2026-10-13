@@ -84,7 +84,10 @@ Spec: `06-LICENSING-V1.12-SPEC.md` (VRInstructorRef). Everything below is additi
 | Piece | What it does |
 |---|---|
 | `LicenseConfig.storePlatform` | `None` (default) · `MetaHorizon` · `Steam` (phase 2, behaves as None). |
-| `LicenseConfig.storeSkus` | `sub_monthly` / `sub_6m` / `sub_annual` — the subscription SKUs of **this** app in the Meta dashboard. |
+| `LicenseConfig.storeSubscriptionSku` / `storeTerms` | Meta models a subscription as **one SKU per tier** (`sub_access`) with **terms** as billing plans. Terms use Meta's `OfferTerm` tokens: `MONTHLY`, `SEMIANNUAL`, `ANNUAL` (also WEEKLY, BIWEEKLY, QUARTERLY, BIANNUAL). Checkout string: `{sku}:SUBSCRIPTION__{TERM}`. Prices come from `IAP.GetProductsBySKU` → `BillingPlan.PaidOffer.Price`; none are in code. The panel shows ANNUAL first with a localized "Best value" badge and a localized benefits line. |
+| Boot subscription check | With `MetaHorizon` the signed-in account's subscription is checked on **every** launch before the demo can start (a user may subscribe from the store page); a subscriber never sees the countdown or the paywall. Unlock still requires the server's verdict. |
+| Editor store stub | *Tools > Blix Studios > Licensing > Editor store stub (toggle)*: fake store + fake server verification to exercise the whole flow in Play mode (plans → checkout → verify → `SubscribedViaStore` → cache). Never compiled into players. |
+| Release check | A non-development build with `storePlatform = MetaHorizon` and `enforceEntitlement` OFF **fails** with a clear message. |
 | `LicenseConfig.enforceEntitlement` | OFF in development (sideloaded APKs fail Meta's app-ownership check); ON only in published store builds. |
 | Meta XR Platform SDK | **Optional.** Installing `com.meta.xr.sdk.platform` sets the `VRL_META_PLATFORM` define (asmdef `versionDefines` + an editor sync into Player Settings) and compiles the `VRLicensing.MetaStore` assembly. Without it, `MetaHorizon` logs a warning and behaves as `None`. Set the App ID in *Meta > Platform > Edit Settings*. |
 | Boot (MetaHorizon) | Platform init + entitlement check within 10 s → cached key → cached store subscription → (phase B) server verification. Failures are logged; the app continues in demo/key mode unless `enforceEntitlement` is ON. |
@@ -92,7 +95,7 @@ Spec: `06-LICENSING-V1.12-SPEC.md` (VRInstructorRef). Everything below is additi
 | `LicenseState.SubscribedViaStore` | Equivalent to `Licensed` for gating; no client branding. Cached encrypted until `min(expiresAt + 3 days grace, verifiedAt + maxOfflineHours)`. |
 | Device code | `Device code: XXXXX-XXXXX` at the foot of every license panel, in 11 languages: first 10 hex chars (uppercase) of SHA-256 over the UTF-8 bytes of `SystemInfo.deviceUniqueIdentifier` — the exact string sent as `p_device_id`. |
 | Branding / telemetry | Now through `get_license_branding` / `report_telemetry` RPCs; falls back to the pre-1.12 direct table access while they return 404 (not deployed). |
-| Phase B (`StoreVerification.ServerEnabled`) | Wired but OFF until the server is deployed: `verify-store-entitlement` Edge Function (Meta user id + `Users.GetUserProof` nonce), `p_store_user_id` on `get_device_status`, `p_events` on `report_device_session`. Until then a completed checkout **cannot** unlock the app (server-authoritative by design). |
+| Server verification | Always on: `verify-store-entitlement` Edge Function (Meta user id + `Users.GetUserProof` nonce), `p_store_user_id` on `get_device_status`, `p_events` on `report_device_session` (events carry name, SKU, term and time — never the Meta user id). While the function is not deployed the call fails and the app stays locked with the "internet needed" notice; use the editor stub to test. |
 
 Unknown license statuses (e.g. `revoked`) deserialize without error and are treated as "not valid" with the server's message; an online re-validation that returns any verdict other than a connection error drops the cached license immediately.
 
