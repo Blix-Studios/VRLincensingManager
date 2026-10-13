@@ -1,7 +1,9 @@
 // Compiled ONLY when the Meta XR Platform SDK (com.meta.xr.sdk.platform) is installed:
-// this assembly carries defineConstraints [VRL_META_PLATFORM], which the asmdef's own
-// versionDefines entry sets when the package is present. Projects without the SDK never
-// compile this file and the runtime assembly never references it.
+// this assembly carries defineConstraints [VRL_META_PLATFORM_PKG], a symbol that exists ONLY
+// through the asmdef's own versionDefines entry (package presence). It is deliberately not the
+// Player-Settings symbol VRL_META_PLATFORM: that one is synced by an editor script a moment
+// AFTER a package change, so gating on it made the first recompile after removing the SDK
+// fail. Projects without the SDK never compile this file and the runtime never references it.
 using System;
 using System.Collections;
 using Oculus.Platform;
