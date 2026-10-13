@@ -27,7 +27,8 @@ namespace VRLicensing.Editor
         private SerializedProperty _maxOfflineHoursProp;
         private SerializedProperty _rsaPublicKeyProp;
         private SerializedProperty _storePlatformProp;
-        private SerializedProperty _storeSkusProp;
+        private SerializedProperty _storeSkuProp;
+        private SerializedProperty _storeTermsProp;
         private SerializedProperty _enforceEntitlementProp;
 
         // Styles
@@ -200,7 +201,10 @@ namespace VRLicensing.Editor
                 EditorGUILayout.PropertyField(_storePlatformProp,
                     new GUIContent("Store Platform",
                         "None for company APKs. MetaHorizon for Meta Horizon Store builds (entitlement check + in-app subscriptions)."));
-                EditorGUILayout.PropertyField(_storeSkusProp, new GUIContent("Subscription SKUs"), true);
+                EditorGUILayout.PropertyField(_storeSkuProp,
+                    new GUIContent("Subscription SKU", "One SKU per tier in the Meta dashboard; default sub_access."));
+                EditorGUILayout.PropertyField(_storeTermsProp,
+                    new GUIContent("Terms (Meta OfferTerm)", "MONTHLY, SEMIANNUAL, ANNUAL… The panel shows ANNUAL first."), true);
                 EditorGUILayout.PropertyField(_enforceEntitlementProp,
                     new GUIContent("Enforce Entitlement",
                         "ON only in published store builds. OFF during development (sideloaded APKs fail the check)."));
@@ -279,7 +283,8 @@ namespace VRLicensing.Editor
             _maxOfflineHoursProp = _serializedConfig.FindProperty("maxOfflineHours");
             _rsaPublicKeyProp = _serializedConfig.FindProperty("rsaPublicKeyPem");
             _storePlatformProp = _serializedConfig.FindProperty("storePlatform");
-            _storeSkusProp = _serializedConfig.FindProperty("storeSkus");
+            _storeSkuProp = _serializedConfig.FindProperty("storeSubscriptionSku");
+            _storeTermsProp = _serializedConfig.FindProperty("storeTerms");
             _enforceEntitlementProp = _serializedConfig.FindProperty("enforceEntitlement");
         }
 

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace VRLicensing
@@ -53,10 +54,14 @@ namespace VRLicensing
                  "Steam: reserved for phase 2 (behaves like None for now).")]
         public StorePlatform storePlatform = StorePlatform.None;
 
-        [Tooltip("Subscription SKUs of THIS app in the store dashboard. One subscription per term; " +
-                 "SKUs are per app and cannot be edited once created. Leave a field empty to hide " +
-                 "that plan. Only used when storePlatform is not None.")]
-        public StoreSkus storeSkus = new StoreSkus();
+        [Tooltip("Subscription SKU of THIS app in the Meta dashboard (one SKU per tier; each term is a " +
+                 "billing plan of that SKU). Default sub_access. Only used when storePlatform is not None.")]
+        public string storeSubscriptionSku = "sub_access";
+
+        [Tooltip("Term tokens offered as buttons, exactly as Meta names them (OfferTerm): MONTHLY, " +
+                 "SEMIANNUAL, ANNUAL (also WEEKLY, BIWEEKLY, QUARTERLY, BIANNUAL). The checkout string is " +
+                 "'{storeSubscriptionSku}:SUBSCRIPTION__{term}'. The panel shows ANNUAL first.")]
+        public List<string> storeTerms = new List<string> { "MONTHLY", "SEMIANNUAL", "ANNUAL" };
 
         [Tooltip("Store builds only. ON: when Meta's app-ownership (entitlement) check fails, the " +
                  "app is locked and closes after a short notice (what VRC.Quest.Security.1 expects " +
@@ -87,51 +92,5 @@ namespace VRLicensing
         public string promoCode = "";
         public string promoHeadline = "Launch offer";
         public string promoDetail = "50% off your first license";
-    }
-
-    /// <summary>
-    /// Subscription SKUs of one app in the store dashboard (spec 06-LICENSING-V1.12 §1.4).
-    /// Default names follow the catalogue convention: sub_monthly / sub_6m / sub_annual.
-    /// </summary>
-    [Serializable]
-    public class StoreSkus
-    {
-        [Tooltip("1-month subscription SKU")]
-        public string monthly = "sub_monthly";
-
-        [Tooltip("6-month subscription SKU")]
-        public string sixMonths = "sub_6m";
-
-        [Tooltip("12-month subscription SKU")]
-        public string annual = "sub_annual";
-
-        /// <summary>Human-readable term labels, same order as <see cref="All"/>.</summary>
-        public static readonly string[] TermLabels = { "Monthly", "6 months", "Annual" };
-
-        /// <summary>Term names used by the server (<c>term</c> field): monthly / 6m / annual.</summary>
-        public static readonly string[] TermIds = { "monthly", "6m", "annual" };
-
-        /// <summary>
-        /// The three SKUs in a fixed order (monthly, 6 months, annual). Empty entries are
-        /// kept as empty strings so indices stay aligned with <see cref="TermLabels"/>.
-        /// </summary>
-        public string[] All => new[]
-        {
-            (monthly ?? "").Trim(),
-            (sixMonths ?? "").Trim(),
-            (annual ?? "").Trim()
-        };
-
-        /// <summary>Configured (non-empty) SKUs only.</summary>
-        public string[] Configured
-        {
-            get
-            {
-                var list = new System.Collections.Generic.List<string>(3);
-                foreach (string s in All)
-                    if (!string.IsNullOrEmpty(s) && !list.Contains(s)) list.Add(s);
-                return list.ToArray();
-            }
-        }
     }
 }

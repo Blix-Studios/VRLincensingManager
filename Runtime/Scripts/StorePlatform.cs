@@ -16,20 +16,39 @@ namespace VRLicensing
         Steam = 2
     }
 
-    /// <summary>A purchasable product as reported by the store (price already localized by the store).</summary>
+    /// <summary>One billing plan (term) of a subscription product, priced by the store.</summary>
+    public sealed class StoreTermPrice
+    {
+        /// <summary>Meta OfferTerm token: MONTHLY, SEMIANNUAL, ANNUAL…</summary>
+        public string term;
+        /// <summary>Localized price string exactly as the store formats it (e.g. "$49.99").</summary>
+        public string formattedPrice;
+        public string currency;
+        public bool hasTrial;
+    }
+
+    /// <summary>A subscription product as reported by the store (spec §1.0: one SKU per tier, terms as billing plans).</summary>
     public sealed class StoreProductInfo
     {
         public string sku;
         public string name;
-        /// <summary>Localized price string exactly as the store formats it (e.g. "$49.99").</summary>
-        public string formattedPrice;
         public bool isSubscription;
+        public readonly List<StoreTermPrice> terms = new List<StoreTermPrice>();
+
+        public StoreTermPrice FindTerm(string term)
+        {
+            if (string.IsNullOrEmpty(term)) return null;
+            foreach (var t in terms)
+                if (t != null && string.Equals(t.term, term, StringComparison.OrdinalIgnoreCase)) return t;
+            return null;
+        }
     }
 
     /// <summary>A purchase / subscription the store reports for the signed-in user.</summary>
     public sealed class StorePurchaseInfo
     {
         public string sku;
+        public string term;        // when the store reports it (checkout result), else empty
         public string purchaseId;
         /// <summary>UTC expiration reported by the store; DateTime.MaxValue when the store reports none.</summary>
         public DateTime expirationUtc = DateTime.MaxValue;
@@ -71,21 +90,24 @@ namespace VRLicensing
         /// <summary>App-ownership (entitlement) check for the signed-in account.</summary>
         IEnumerator CheckEntitlement(Action<bool, string> onDone);
 
-        /// <summary>Products for the given SKUs. SKUs the store does not know are simply absent.</summary>
-        IEnumerator GetProducts(IList<string> skus, Action<List<StoreProductInfo>, string> onDone);
+        /// <summary>
+        /// The subscription product for one SKU with its billing plans (term + localized price).
+        /// Null product (no error) when the store does not know the SKU.
+        /// </summary>
+        IEnumerator GetSubscriptionProduct(string sku, Action<StoreProductInfo, string> onDone);
 
         /// <summary>
-        /// The viewer's currently active subscription among the given SKUs (latest expiration
-        /// wins), or null when there is none. Error only when the store call itself failed.
+        /// The viewer's currently active subscription for the SKU (latest expiration wins), or
+        /// null when there is none. Error only when the store call itself failed.
         /// </summary>
-        IEnumerator GetActiveSubscription(IList<string> skus, Action<StorePurchaseInfo, string> onDone);
+        IEnumerator GetActiveSubscription(string sku, Action<StorePurchaseInfo, string> onDone);
 
-        /// <summary>Opens the store's own checkout UI for one SKU.</summary>
-        IEnumerator LaunchCheckout(string sku, Action<StoreCheckoutResult> onDone);
+        /// <summary>Opens the store's own checkout UI. <paramref name="checkoutSku"/> = "{sku}:SUBSCRIPTION__{TERM}".</summary>
+        IEnumerator LaunchCheckout(string checkoutSku, Action<StoreCheckoutResult> onDone);
 
         /// <summary>
         /// Signed-in store user id plus a one-time proof (nonce) the server validates with the
-        /// store. Used by the server-authoritative subscription verification (phase B).
+        /// store. Used only by the server-authoritative subscription verification.
         /// </summary>
         IEnumerator GetUserIdentity(Action<string, string, string> onDone);
     }
@@ -93,22 +115,24 @@ namespace VRLicensing
     /// <summary>
     /// Registry the optional store assemblies register into at AfterAssembliesLoaded (which runs
     /// before LicenseBootstrapper's BeforeSceneLoad). The runtime resolves providers from here
-    /// without any static reference to a store SDK.
+    /// without any static reference to a store SDK. Higher priority wins (the editor stub uses it).
     /// </summary>
     public static class StorePlatformRegistry
     {
-        private static readonly Dictionary<StorePlatform, Func<IStorePlatformProvider>> factories =
-            new Dictionary<StorePlatform, Func<IStorePlatformProvider>>();
+        private sealed class Entry { public Func<IStorePlatformProvider> factory; public int priority; public string name; }
 
-        public static void Register(StorePlatform platform, Func<IStorePlatformProvider> factory)
+        private static readonly Dictionary<StorePlatform, Entry> entries = new Dictionary<StorePlatform, Entry>();
+
+        public static void Register(StorePlatform platform, Func<IStorePlatformProvider> factory, int priority = 0, string name = null)
         {
             if (factory == null) return;
-            factories[platform] = factory;
-            Debug.Log($"[VR Licensing] Store provider registered: {platform}");
+            if (entries.TryGetValue(platform, out var existing) && existing.priority > priority) return;
+            entries[platform] = new Entry { factory = factory, priority = priority, name = name ?? "provider" };
+            Debug.Log($"[VR Licensing] Store provider registered: {platform} ({entries[platform].name})");
         }
 
         public static bool IsAvailable(StorePlatform platform) =>
-            platform != StorePlatform.None && factories.ContainsKey(platform);
+            platform != StorePlatform.None && entries.ContainsKey(platform);
 
         /// <summary>
         /// The platform the build will actually behave as: the requested one when a provider is
@@ -119,10 +143,10 @@ namespace VRLicensing
 
         public static IStorePlatformProvider Create(StorePlatform platform)
         {
-            if (!factories.TryGetValue(platform, out var factory)) return null;
+            if (!entries.TryGetValue(platform, out var entry)) return null;
             try
             {
-                return factory();
+                return entry.factory();
             }
             catch (Exception e)
             {
@@ -154,17 +178,72 @@ namespace VRLicensing
     }
 
     /// <summary>
-    /// Phase B switch (spec 06-LICENSING-V1.12 §1.1): server-authoritative verification of store
-    /// subscriptions through the verify-store-entitlement Edge Function, plus p_store_user_id on
-    /// get_device_status and p_events on report_device_session. Everything is wired; it is turned
-    /// on once the server side is deployed. While OFF, a completed store checkout cannot unlock the
-    /// app (the client never decides it is subscribed on its own word).
+    /// Store subscription helpers shared by the manager, the UI and the providers.
+    /// </summary>
+    public static class StoreSubscription
+    {
+        /// <summary>Checkout string per spec §1.0: "{sku}:SUBSCRIPTION__{TERM}" (Meta's own example: TEST_SKU:SUBSCRIPTION__MONTHLY).</summary>
+        public static string CheckoutSku(string sku, string term) =>
+            (sku ?? "").Trim() + ":SUBSCRIPTION__" + NormalizeTerm(term);
+
+        public static string NormalizeTerm(string term) => (term ?? "").Trim().ToUpperInvariant();
+
+        /// <summary>
+        /// Display order: ANNUAL first (Meta requires the best-value plan to be the most visible),
+        /// then the configured order. Empty / duplicate tokens are dropped.
+        /// </summary>
+        public static List<string> OrderedTerms(IList<string> configured)
+        {
+            var result = new List<string>();
+            if (configured == null) return result;
+            foreach (string raw in configured)
+            {
+                string t = NormalizeTerm(raw);
+                if (t.Length > 0 && !result.Contains(t)) result.Add(t);
+            }
+            int annual = result.IndexOf("ANNUAL");
+            if (annual > 0)
+            {
+                result.RemoveAt(annual);
+                result.Insert(0, "ANNUAL");
+            }
+            return result;
+        }
+
+        /// <summary>Splits "sku:SUBSCRIPTION__TERM" (or a bare sku) into its parts.</summary>
+        public static void ParseCheckoutSku(string checkoutSku, out string sku, out string term)
+        {
+            sku = checkoutSku ?? "";
+            term = "";
+            int i = sku.IndexOf(":SUBSCRIPTION__", StringComparison.OrdinalIgnoreCase);
+            if (i < 0) return;
+            term = NormalizeTerm(sku.Substring(i + ":SUBSCRIPTION__".Length));
+            sku = sku.Substring(0, i);
+        }
+
+        /// <summary>True when a purchase's SKU is this subscription (bare or with a term suffix).</summary>
+        public static bool MatchesSku(string purchaseSku, string sku)
+        {
+            if (string.IsNullOrEmpty(purchaseSku) || string.IsNullOrEmpty(sku)) return false;
+            if (string.Equals(purchaseSku, sku, StringComparison.OrdinalIgnoreCase)) return true;
+            return purchaseSku.StartsWith(sku + ":", StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    /// <summary>
+    /// Server-authoritative verification of store subscriptions (spec §1.1). The client always
+    /// asks the server; the only exception is an EDITOR stub for testing the flow before the
+    /// server functions are deployed (see <see cref="StubVerifier"/>, never set in players).
     /// </summary>
     public static class StoreVerification
     {
-        public static readonly bool ServerEnabled = false;
-
         /// <summary>Meta's grace period after a failed renewal, added to expiresAt for the cache.</summary>
         public const int GraceDays = 3;
+
+        /// <summary>
+        /// Editor-only stand-in for the verify-store-entitlement Edge Function:
+        /// (storeUserId, nonce, productId) → result. Null in players and whenever no stub is active.
+        /// </summary>
+        public static Func<string, string, int, StoreVerifyResult> StubVerifier;
     }
 }

@@ -32,7 +32,10 @@ namespace VRLicensing
     /// <summary>What the store currently offers / already granted to the signed-in user.</summary>
     public sealed class StoreOffersResult
     {
-        public List<StoreProductInfo> products = new List<StoreProductInfo>();
+        /// <summary>The subscription product with its billing plans (term + localized price), or null.</summary>
+        public StoreProductInfo product;
+        /// <summary>Configured terms in display order (ANNUAL first).</summary>
+        public List<string> terms = new List<string>();
         /// <summary>Active subscription the store already reports for this account, if any.</summary>
         public StorePurchaseInfo existingSubscription;
         public string error;
@@ -77,7 +80,7 @@ namespace VRLicensing
         private StoreEntitlementData cachedStoreEntitlement;
         private bool activatingStoreFromCache;
         private string storeUserId;                 // Meta user id once the server verified it (phase B)
-        private List<StoreProductInfo> storeProducts; // per-session product cache
+        private StoreProductInfo storeProduct;          // per-session product cache (SKU + billing plans)
         private readonly List<string> storeEvents = new List<string>(); // pending p_events (phase B)
         private string pendingNotice;               // shown once on the next panel (e.g. offline notice)
         private bool entitlementBlocked;
@@ -262,8 +265,9 @@ namespace VRLicensing
 
             if (storeProvider != null)
                 Debug.Log($"[VR Licensing] Store platform: {effectiveStorePlatform} " +
-                          $"(SKUs: {string.Join(", ", config.storeSkus.Configured)}; " +
-                          $"server verification {(StoreVerification.ServerEnabled ? "ON" : "OFF — phase B")})");
+                          $"(subscription SKU {config.storeSubscriptionSku}; terms " +
+                          $"{string.Join(", ", StoreSubscription.OrderedTerms(config.storeTerms))}" +
+                          $"{(StoreVerification.StubVerifier != null ? "; EDITOR STUB verification" : "")})");
         }
 
         /// <summary>
@@ -524,9 +528,13 @@ namespace VRLicensing
         }
 
         /// <summary>
-        /// Spec §1.4 boot order after the cached key: cached store entitlement still valid →
-        /// unlock; otherwise (phase B) ask the server. A stale cache without network leaves the
-        /// app locked with the "internet needed" notice.
+        /// Spec §1.4, run on EVERY launch with a store platform, before the demo can start (a
+        /// user may have subscribed from the store page before installing, and a subscriber must
+        /// never see the countdown or the paywall):
+        ///   cached store entitlement still valid → unlock;
+        ///   otherwise ask the store whether the account holds the subscription and, when it does
+        ///   (or a stale cache existed), ask the server to verify it. The client never unlocks on
+        ///   the store's word alone. No network with a stale cache → locked with the offline notice.
         /// </summary>
         private IEnumerator TryUnlockFromStore(Action<bool> onDone)
         {
@@ -543,7 +551,7 @@ namespace VRLicensing
             {
                 if (cached.IsCacheValid && cached.product_id == config.productId)
                 {
-                    Debug.Log($"[VR Licensing] Cached store subscription valid ({cached.sku}, {cached.status}, " +
+                    Debug.Log($"[VR Licensing] Cached store subscription valid ({cached.sku} {cached.term}, {cached.status}, " +
                               $"cache until {cached.cache_until}).");
                     activatingStoreFromCache = true;
                     ActivateStoreSubscription(cached);
@@ -557,27 +565,35 @@ namespace VRLicensing
                 SecureLicenseStorage.ClearStoreEntitlement();
             }
 
-            if (StoreVerification.ServerEnabled)
+            // Does the signed-in store account hold the subscription (bought in-app or from the
+            // store page)? Only a store call; cheap and allowed on every launch.
+            StorePurchaseInfo storeSays = null;
+            string storeError = null;
+            yield return storeProvider.GetActiveSubscription(config.storeSubscriptionSku,
+                (purchase, err) => { storeSays = purchase; storeError = err; });
+            if (storeError != null)
+                Debug.LogWarning($"[VR Licensing] Could not read the account's purchases at boot: {storeError}");
+
+            if (storeSays == null && !hadStaleCache)
             {
-                bool ok = false;
-                string err = null;
-                yield return VerifyStoreEntitlementOnline((success, error) => { ok = success; err = error; }, silent: true);
-                if (ok)
-                {
-                    onDone(true);
-                    yield break;
-                }
-                if (hadStaleCache)
-                {
-                    Debug.LogWarning($"[VR Licensing] Store subscription could not be re-verified: {err}");
-                    pendingNotice = "An internet connection is needed to verify your subscription.";
-                }
-            }
-            else if (hadStaleCache)
-            {
-                pendingNotice = "An internet connection is needed to verify your subscription.";
+                onDone(false); // nothing to verify: demo / license-key flow as usual
+                yield break;
             }
 
+            if (storeSays != null)
+                Debug.Log($"[VR Licensing] Store reports an active subscription ({storeSays.sku} {storeSays.term}) — verifying with the server.");
+
+            bool ok = false;
+            string verifyError = null;
+            yield return VerifyStoreEntitlementOnline((success, error) => { ok = success; verifyError = error; }, silent: true);
+            if (ok)
+            {
+                onDone(true);
+                yield break;
+            }
+
+            Debug.LogWarning($"[VR Licensing] Store subscription could not be verified with the server: {verifyError}");
+            pendingNotice = "An internet connection is needed to verify your subscription.";
             onDone(false);
         }
 
@@ -591,7 +607,7 @@ namespace VRLicensing
             clockGuard.UpdateHighestKnownTime();
             OnStoreSubscriptionActivated?.Invoke(data);
 
-            Debug.Log($"[VR Licensing] Store subscription ACTIVE — {data.sku} ({data.status}), " +
+            Debug.Log($"[VR Licensing] Store subscription ACTIVE — {data.sku} {data.term} ({data.status}), " +
                       $"expires {data.expires_at}, offline cache until {data.cache_until}");
 
             // No branding for individual subscribers. Report the session (and pending events).
@@ -600,8 +616,8 @@ namespace VRLicensing
 
         /// <summary>
         /// What to show on the subscription column: the viewer's existing subscription (if the
-        /// store already reports one) and the configured products with their store prices.
-        /// Products are cached per session.
+        /// store already reports one) and the subscription product with its billing plans (term +
+        /// store-localized price). The product is cached per session.
         /// </summary>
         public IEnumerator RefreshStoreOffers(Action<StoreOffersResult> onDone)
         {
@@ -614,74 +630,77 @@ namespace VRLicensing
                 yield break;
             }
 
-            string[] skus = config.storeSkus.Configured;
-            if (skus.Length == 0)
+            string sku = (config.storeSubscriptionSku ?? "").Trim();
+            if (sku.Length == 0)
             {
-                result.error = "no store SKUs configured in LicenseConfig.storeSkus";
+                result.error = "no subscription SKU configured in LicenseConfig.storeSubscriptionSku";
                 onDone?.Invoke(result);
                 yield break;
             }
 
             // Meta requirement: check the viewer's current subscription BEFORE offering plans.
-            yield return storeProvider.GetActiveSubscription(skus, (purchase, err) =>
+            yield return storeProvider.GetActiveSubscription(sku, (purchase, err) =>
             {
                 result.existingSubscription = purchase;
                 if (err != null) Debug.LogWarning($"[VR Licensing] Could not read store purchases: {err}");
             });
 
-            if (storeProducts == null)
+            if (storeProduct == null)
             {
-                List<StoreProductInfo> fetched = null;
+                StoreProductInfo fetched = null;
                 string fetchError = null;
-                yield return storeProvider.GetProducts(skus, (list, err) => { fetched = list; fetchError = err; });
+                yield return storeProvider.GetSubscriptionProduct(sku, (product, err) => { fetched = product; fetchError = err; });
                 if (fetchError != null) result.error = fetchError;
-                else storeProducts = fetched ?? new List<StoreProductInfo>();
+                else storeProduct = fetched;
             }
 
-            result.products = storeProducts ?? new List<StoreProductInfo>();
+            result.product = storeProduct;
+            result.terms = StoreSubscription.OrderedTerms(config.storeTerms);
             onDone?.Invoke(result);
         }
 
         /// <summary>
-        /// Opens the store checkout for one SKU, then (phase B) asks the server to verify the
-        /// subscription and unlocks. Result: (success, message). A dismissed checkout is reported
-        /// as (false, "Checkout cancelled.").
+        /// Opens the store checkout for one term of the subscription SKU, then asks the server
+        /// to verify the subscription and unlocks. Result: (success, message). A dismissed
+        /// checkout is reported as (false, "Checkout cancelled.").
         /// </summary>
-        public void SubscribeViaStore(string sku, Action<bool, string> onResult)
+        public void SubscribeViaStore(string term, Action<bool, string> onResult)
         {
             if (storeProvider == null || !storeProvider.IsInitialized)
             {
                 onResult?.Invoke(false, "The store is not available right now.");
                 return;
             }
-            StartCoroutine(SubscribeViaStoreRoutine(sku, onResult));
+            StartCoroutine(SubscribeViaStoreRoutine(term, onResult));
         }
 
-        private IEnumerator SubscribeViaStoreRoutine(string sku, Action<bool, string> onResult)
+        private IEnumerator SubscribeViaStoreRoutine(string term, Action<bool, string> onResult)
         {
-            QueueStoreEvent("checkout_opened", sku);
+            term = StoreSubscription.NormalizeTerm(term);
+            string checkoutSku = StoreSubscription.CheckoutSku(config.storeSubscriptionSku, term);
+            QueueStoreEvent("checkout_opened", term);
 
             StoreCheckoutResult checkout = null;
-            yield return storeProvider.LaunchCheckout(sku, r => checkout = r);
+            yield return storeProvider.LaunchCheckout(checkoutSku, r => checkout = r);
 
             if (checkout == null || checkout.outcome == StoreCheckoutOutcome.Cancelled)
             {
-                QueueStoreEvent("checkout_cancelled", sku);
-                Debug.Log($"[VR Licensing] Store checkout cancelled ({sku}).");
+                QueueStoreEvent("checkout_cancelled", term);
+                Debug.Log($"[VR Licensing] Store checkout cancelled ({checkoutSku}).");
                 onResult?.Invoke(false, "Checkout cancelled.");
                 yield break;
             }
 
             if (checkout.outcome == StoreCheckoutOutcome.Failed)
             {
-                QueueStoreEvent("checkout_cancelled", sku);
-                Debug.LogWarning($"[VR Licensing] Store checkout failed ({sku}): {checkout.error}");
+                QueueStoreEvent("checkout_cancelled", term);
+                Debug.LogWarning($"[VR Licensing] Store checkout failed ({checkoutSku}): {checkout.error}");
                 onResult?.Invoke(false, "Checkout failed: " + checkout.error);
                 yield break;
             }
 
-            QueueStoreEvent("checkout_completed", sku);
-            Debug.Log($"[VR Licensing] Store checkout completed ({sku}, purchase {checkout.purchase?.purchaseId}).");
+            QueueStoreEvent("checkout_completed", term);
+            Debug.Log($"[VR Licensing] Store checkout completed ({checkoutSku}, purchase {checkout.purchase?.purchaseId}).");
 
             yield return VerifyStoreEntitlementOnline(onResult, silent: false);
         }
@@ -698,18 +717,10 @@ namespace VRLicensing
         /// <summary>
         /// Server-authoritative verification (spec §1.1): store user id + one-time proof →
         /// verify-store-entitlement → encrypted cache → <see cref="LicenseState.SubscribedViaStore"/>.
-        /// Gated by <see cref="StoreVerification.ServerEnabled"/> (phase B).
+        /// In the editor, <see cref="StoreVerification.StubVerifier"/> may stand in for the server.
         /// </summary>
         private IEnumerator VerifyStoreEntitlementOnline(Action<bool, string> onResult, bool silent)
         {
-            if (!StoreVerification.ServerEnabled)
-            {
-                Debug.LogWarning("[VR Licensing] Store verification is disabled in this build (phase B not enabled) — " +
-                                 "the subscription cannot unlock the app until the server side is deployed.");
-                onResult?.Invoke(false, "Subscription verification is not available in this build yet.");
-                yield break;
-            }
-
             if (storeProvider == null || !storeProvider.IsInitialized)
             {
                 onResult?.Invoke(false, "The store is not available right now.");
@@ -728,9 +739,18 @@ namespace VRLicensing
 
             StoreVerifyResult verify = null;
             string verifyError = null;
-            yield return supabaseClient.VerifyStoreEntitlement(
-                userId, nonce, config.productId, VRLicensing.DeviceCode.RawDeviceId, storeProvider.PlatformId,
-                r => verify = r, e => verifyError = e);
+            if (StoreVerification.StubVerifier != null)
+            {
+                verify = StoreVerification.StubVerifier(userId, nonce, config.productId);
+                if (verify == null) verifyError = "editor stub: server down";
+                yield return null;
+            }
+            else
+            {
+                yield return supabaseClient.VerifyStoreEntitlement(
+                    userId, nonce, config.productId, VRLicensing.DeviceCode.RawDeviceId, storeProvider.PlatformId,
+                    r => verify = r, e => verifyError = e);
+            }
 
             if (verify == null)
             {
@@ -752,18 +772,22 @@ namespace VRLicensing
             var data = StoreEntitlementData.FromServer(verify, storeProvider.PlatformId, userId,
                 config.productId, config.maxOfflineHours);
             SecureLicenseStorage.SaveStoreEntitlement(data);
-            QueueStoreEvent("subscription_verified", verify.sku);
+            QueueStoreEvent("subscription_verified", verify.term);
 
             activatingStoreFromCache = false;
             ActivateStoreSubscription(data);
             onResult?.Invoke(true, null);
         }
 
-        /// <summary>Queues a store analytics event for the next report_device_session (phase B).</summary>
-        private void QueueStoreEvent(string name, string sku)
+        /// <summary>
+        /// Queues a checkout analytics event for the next report_device_session (p_events).
+        /// Data rules (spec §1.4): name, SKU, term and time only — never the Meta user id.
+        /// </summary>
+        private void QueueStoreEvent(string name, string term)
         {
             string at = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
-            storeEvents.Add("{\"name\":\"" + name + "\",\"sku\":\"" + (sku ?? "") + "\",\"at\":\"" + at + "\"}");
+            storeEvents.Add("{\"name\":\"" + name + "\",\"sku\":\"" + (config.storeSubscriptionSku ?? "") +
+                            "\",\"term\":\"" + (term ?? "") + "\",\"at\":\"" + at + "\"}");
             if (storeEvents.Count > 50) storeEvents.RemoveAt(0);
         }
 
@@ -771,11 +795,6 @@ namespace VRLicensing
         private string DrainStoreEvents()
         {
             if (storeEvents.Count == 0) return null;
-            if (!StoreVerification.ServerEnabled)
-            {
-                storeEvents.Clear(); // nowhere to send them yet
-                return null;
-            }
             string json = "[" + string.Join(",", storeEvents) + "]";
             storeEvents.Clear();
             return json;

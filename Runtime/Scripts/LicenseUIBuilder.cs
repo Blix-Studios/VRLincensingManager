@@ -94,13 +94,22 @@ namespace VRLicensing
             public GameObject root;
             public RectTransform rt;
             public TextMeshProUGUI title;
-            public TextMeshProUGUI subtitle;
+            public TextMeshProUGUI benefits;
             public TextMeshProUGUI status;
-            public readonly Button[] buttons = new Button[3];
-            public readonly TextMeshProUGUI[] labels = new TextMeshProUGUI[3];
-            public readonly string[] skus = new string[3];
+            public readonly System.Collections.Generic.List<StoreTermButton> buttons =
+                new System.Collections.Generic.List<StoreTermButton>();
             public bool collapsed;
             public Coroutine populate;
+        }
+
+        /// <summary>One plan button: a Meta OfferTerm token, its label and the optional "Best value" badge.</summary>
+        private sealed class StoreTermButton
+        {
+            public string term;
+            public Button button;
+            public TextMeshProUGUI label;
+            public TextMeshProUGUI badge; // ANNUAL only
+            public string price;          // store-localized, set after the product is fetched
         }
 
         // Success Panel
@@ -815,11 +824,12 @@ namespace VRLicensing
         // ─────────────────── STORE SUBSCRIPTION COLUMN (v1.12) ───────────────────
 
         /// <summary>
-        /// Left column of the expired panels in Meta Horizon Store builds: one button per
-        /// configured subscription SKU, labelled with the term and the store's own localized
-        /// price. Buttons stay hidden until the store reports the products (see
-        /// <see cref="PopulateStoreColumn"/>); if it reports none, the column collapses and
-        /// the key column takes the centre.
+        /// Left column of the expired panels in Meta Horizon Store builds (spec §1.0/§1.4): one
+        /// button per configured term of the single subscription SKU, ANNUAL first with a
+        /// "Best value" badge, labelled with the term and the price Meta reports for that billing
+        /// plan, plus a localized line describing what the subscription unlocks. No price is
+        /// hard-coded. Buttons stay hidden until the store reports the product; if it reports
+        /// nothing, the column collapses and the key column takes the centre.
         /// </summary>
         private StoreColumn BuildStoreColumn(RectTransform panelRt, float x, string prefix)
         {
@@ -831,34 +841,83 @@ namespace VRLicensing
                 "Unlock the full course",
                 16, FontStyles.Bold, COLOR_GREEN, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
-                size: new Vector2(410, 26), pos: new Vector2(0, 85));
+                size: new Vector2(410, 26), pos: new Vector2(0, 92));
 
-            col.subtitle = CreateTMPText(prefix + "Subtitle", col.rt,
-                "Subscribe with your Meta account",
-                12, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
+            col.benefits = CreateTMPText(prefix + "Benefits", col.rt,
+                "",
+                11, FontStyles.Normal, COLOR_TEXT, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
-                size: new Vector2(410, 20), pos: new Vector2(0, 62));
+                size: new Vector2(400, 34), pos: new Vector2(0, 62));
 
-            string[] skus = config.storeSkus.All;
-            float[] ys = { 28f, -22f, -72f };
-            for (int i = 0; i < 3; i++)
+            var terms = StoreSubscription.OrderedTerms(config.storeTerms);
+            float y = 22f;
+            foreach (string term in terms)
             {
-                int index = i;
-                col.skus[i] = skus[i];
-                Button btn = CreatePositionedButton(prefix + "Plan" + i, col.rt,
-                    StoreSkus.TermLabels[i], new Vector2(300, 42), new Vector2(0, ys[i]),
-                    COLOR_ACCENT, COLOR_ACCENT_HOVER, () => OnStoreBuyClicked(col, index));
-                col.buttons[i] = btn;
-                col.labels[i] = btn.GetComponentInChildren<TextMeshProUGUI>();
-                btn.gameObject.SetActive(false);
+                string captured = term;
+                var tb = new StoreTermButton { term = term };
+                tb.button = CreatePositionedButton(prefix + "Plan_" + term, col.rt,
+                    term, new Vector2(320, 42), new Vector2(0, y),
+                    COLOR_ACCENT, COLOR_ACCENT_HOVER, () => OnStoreBuyClicked(col, captured));
+                tb.label = tb.button.GetComponentInChildren<TextMeshProUGUI>();
+
+                if (term == "ANNUAL")
+                {
+                    // "Best value" pill at the right end of the button; the label keeps clear of it.
+                    var pill = CreatePanel(prefix + "BestValue", tb.button.GetComponent<RectTransform>(), COLOR_GREEN);
+                    var pillRt = pill.GetComponent<RectTransform>();
+                    pillRt.anchorMin = new Vector2(1f, 0.5f);
+                    pillRt.anchorMax = new Vector2(1f, 0.5f);
+                    pillRt.pivot = new Vector2(1f, 0.5f);
+                    pillRt.sizeDelta = new Vector2(96, 22);
+                    pillRt.anchoredPosition = new Vector2(-6, 0);
+                    tb.badge = CreateTMPText("Label", pillRt, "", 10, FontStyles.Bold, Color.white,
+                        TextAlignmentOptions.Center, stretch: true, padding: new Vector4(4, 4, 2, 2));
+                    tb.badge.enableWordWrapping = false;
+                    tb.badge.overflowMode = TextOverflowModes.Ellipsis;
+                    var labelRt = tb.label.rectTransform;
+                    labelRt.offsetMax = new Vector2(-108, labelRt.offsetMax.y);
+                }
+
+                tb.button.gameObject.SetActive(false);
+                col.buttons.Add(tb);
+                y -= 50f;
             }
 
             col.status = CreateTMPText(prefix + "Status", col.rt,
                 "", 12, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
-                size: new Vector2(410, 44), pos: new Vector2(0, -125));
+                size: new Vector2(410, 44), pos: new Vector2(0, Mathf.Min(-130f, y - 8f)));
 
+            RefreshStoreTexts(col);
             return col;
+        }
+
+        /// <summary>Localized texts of the column (benefits line, badge, term labels) in the current language.</summary>
+        private void RefreshStoreTexts(StoreColumn col)
+        {
+            if (col == null) return;
+            string lang = LicenseStrings.CurrentLanguage;
+
+            if (col.benefits != null)
+            {
+                string line = LicenseStrings.Benefits(lang);
+                col.benefits.text = CanRender(col.benefits, line) ? line : LicenseStrings.Benefits("en");
+            }
+
+            foreach (var tb in col.buttons)
+            {
+                if (tb.badge != null)
+                {
+                    string badge = LicenseStrings.BestValue(lang);
+                    tb.badge.text = CanRender(tb.badge, badge) ? badge : LicenseStrings.BestValue("en");
+                }
+                if (tb.label != null)
+                {
+                    string termLabel = LicenseStrings.TermLabel(tb.term, lang);
+                    if (!CanRender(tb.label, termLabel)) termLabel = LicenseStrings.TermLabel(tb.term, "en");
+                    tb.label.text = string.IsNullOrEmpty(tb.price) ? termLabel : $"{termLabel}  ·  {tb.price}";
+                }
+            }
         }
 
         private void StartPopulate(StoreColumn col, GameObject divider, RectTransform keyColumn)
@@ -877,6 +936,7 @@ namespace VRLicensing
             if (!col.collapsed) ExpandStoreColumn(col, divider, keyColumn);
             SetStoreButtons(col, interactable: false, hideAll: true);
             SetStoreStatus(col, "Loading plans…", COLOR_TEXT_DIM);
+            RefreshStoreTexts(col);
 
             if (manager == null)
             {
@@ -912,21 +972,24 @@ namespace VRLicensing
             }
 
             int visible = 0;
-            for (int i = 0; i < 3; i++)
+            foreach (var tb in col.buttons)
             {
-                StoreProductInfo product = FindProduct(result.products, col.skus[i]);
-                bool show = product != null && !string.IsNullOrEmpty(product.formattedPrice);
-                col.buttons[i].gameObject.SetActive(show);
-                col.buttons[i].interactable = show;
-                if (!show) continue;
-                col.labels[i].text = $"{StoreSkus.TermLabels[i]}  ·  {product.formattedPrice}";
-                visible++;
+                StoreTermPrice plan = result.product != null ? result.product.FindTerm(tb.term) : null;
+                bool show = plan != null && !string.IsNullOrEmpty(plan.formattedPrice);
+                tb.price = show ? plan.formattedPrice : null;
+                tb.button.gameObject.SetActive(show);
+                tb.button.interactable = show;
+                if (show) visible++;
             }
+            RefreshStoreTexts(col);
 
             if (visible == 0)
             {
-                CollapseStoreColumn(col, divider, keyColumn,
-                    $"the store returned no products for SKUs [{string.Join(", ", config.storeSkus.Configured)}]");
+                string why = result.product == null
+                    ? $"the store returned no product for SKU '{config.storeSubscriptionSku}'"
+                    : $"the store's product '{config.storeSubscriptionSku}' has no billing plan for terms " +
+                      $"[{string.Join(", ", result.terms)}] (store reports: {DescribeTerms(result.product)})";
+                CollapseStoreColumn(col, divider, keyColumn, why);
                 yield break;
             }
 
@@ -934,15 +997,22 @@ namespace VRLicensing
             SetStoreStatus(col, "Billed through your Meta account. Manage or cancel anytime in your Meta settings.", COLOR_TEXT_DIM);
         }
 
-        private void OnStoreBuyClicked(StoreColumn col, int index)
+        private static string DescribeTerms(StoreProductInfo product)
         {
-            string sku = col.skus[index];
-            if (string.IsNullOrEmpty(sku) || manager == null) return;
+            if (product == null || product.terms.Count == 0) return "none";
+            var parts = new System.Collections.Generic.List<string>();
+            foreach (var t in product.terms) parts.Add($"{t.term}={t.formattedPrice}");
+            return string.Join(", ", parts);
+        }
+
+        private void OnStoreBuyClicked(StoreColumn col, string term)
+        {
+            if (string.IsNullOrEmpty(term) || manager == null) return;
 
             SetStoreButtons(col, interactable: false, hideAll: false);
             SetStoreStatus(col, "Opening Meta checkout…", COLOR_TEXT_DIM);
 
-            manager.SubscribeViaStore(sku, (ok, message) =>
+            manager.SubscribeViaStore(term, (ok, message) =>
             {
                 if (col.root == null) return;
                 SetStoreButtons(col, interactable: true, hideAll: false);
@@ -979,12 +1049,11 @@ namespace VRLicensing
 
         private static void SetStoreButtons(StoreColumn col, bool interactable, bool hideAll)
         {
-            for (int i = 0; i < col.buttons.Length; i++)
+            foreach (var tb in col.buttons)
             {
-                Button b = col.buttons[i];
-                if (b == null) continue;
-                if (hideAll) b.gameObject.SetActive(false);
-                b.interactable = interactable;
+                if (tb.button == null) continue;
+                if (hideAll) tb.button.gameObject.SetActive(false);
+                tb.button.interactable = interactable;
             }
         }
 
@@ -993,14 +1062,6 @@ namespace VRLicensing
             if (col.status == null) return;
             col.status.text = message ?? "";
             col.status.color = color;
-        }
-
-        private static StoreProductInfo FindProduct(System.Collections.Generic.List<StoreProductInfo> products, string sku)
-        {
-            if (products == null || string.IsNullOrEmpty(sku)) return null;
-            foreach (var p in products)
-                if (p != null && string.Equals(p.sku, sku, StringComparison.OrdinalIgnoreCase)) return p;
-            return null;
         }
 
         // ─────────────────── Column / divider / device code helpers ───────────────────

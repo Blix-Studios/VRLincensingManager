@@ -4,7 +4,6 @@
 // compile this file and the runtime assembly never references it.
 using System;
 using System.Collections;
-using System.Collections.Generic;
 using Oculus.Platform;
 using Oculus.Platform.Models;
 using UnityEngine;
@@ -14,8 +13,9 @@ namespace VRLicensing.MetaStore
 {
     /// <summary>
     /// IStorePlatformProvider for the Meta Horizon Store, on top of the Meta XR Platform SDK:
-    /// platform init, app-ownership (entitlement) check, subscription products, the viewer's
-    /// purchases, Meta's checkout flow and the user proof (nonce) for server verification.
+    /// platform init, app-ownership (entitlement) check, the subscription product with its
+    /// billing plans (OfferTerm + localized price), the viewer's purchases, Meta's checkout
+    /// flow and the user proof (nonce) for server verification.
     /// </summary>
     [Preserve]
     public sealed class MetaStorePlatform : IStorePlatformProvider
@@ -26,7 +26,7 @@ namespace VRLicensing.MetaStore
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterAssembliesLoaded)]
         private static void Register()
         {
-            StorePlatformRegistry.Register(StorePlatform.MetaHorizon, () => new MetaStorePlatform());
+            StorePlatformRegistry.Register(StorePlatform.MetaHorizon, () => new MetaStorePlatform(), 0, "Meta XR Platform SDK");
         }
 
         public StorePlatform Platform => StorePlatform.MetaHorizon;
@@ -114,28 +114,26 @@ namespace VRLicensing.MetaStore
         // IAP
         // ────────────────────────────────────────────────────────────────────
 
-        public IEnumerator GetProducts(IList<string> skus, Action<List<StoreProductInfo>, string> onDone)
+        public IEnumerator GetSubscriptionProduct(string sku, Action<StoreProductInfo, string> onDone)
         {
-            var result = new List<StoreProductInfo>();
             if (!IsInitialized)
             {
-                onDone?.Invoke(result, "platform not initialized");
+                onDone?.Invoke(null, "platform not initialized");
                 yield break;
             }
-            if (skus == null || skus.Count == 0)
+            if (string.IsNullOrEmpty(sku))
             {
-                onDone?.Invoke(result, null);
+                onDone?.Invoke(null, "no subscription SKU configured");
                 yield break;
             }
 
             bool done = false;
             string error = null;
-            var skuArray = new string[skus.Count];
-            skus.CopyTo(skuArray, 0);
+            StoreProductInfo result = null;
 
             try
             {
-                IAP.GetProductsBySKU(skuArray).OnComplete(msg =>
+                IAP.GetProductsBySKU(new[] { sku }).OnComplete(msg =>
                 {
                     done = true;
                     if (msg.IsError)
@@ -146,22 +144,15 @@ namespace VRLicensing.MetaStore
                     if (msg.Data == null) return;
                     foreach (Product p in msg.Data)
                     {
-                        if (p == null || string.IsNullOrEmpty(p.Sku)) continue;
-                        result.Add(new StoreProductInfo
-                        {
-                            sku = p.Sku,
-                            name = p.Name,
-                            formattedPrice = !string.IsNullOrEmpty(p.FormattedPrice)
-                                ? p.FormattedPrice
-                                : (p.Price != null ? p.Price.Formatted : null),
-                            isSubscription = p.Type == ProductType.Subscription
-                        });
+                        if (p == null || !StoreSubscription.MatchesSku(p.Sku, sku)) continue;
+                        result = ToProductInfo(p);
+                        break;
                     }
                 });
             }
             catch (Exception e)
             {
-                onDone?.Invoke(result, "GetProductsBySKU exception: " + e.Message);
+                onDone?.Invoke(null, "GetProductsBySKU exception: " + e.Message);
                 yield break;
             }
 
@@ -169,7 +160,7 @@ namespace VRLicensing.MetaStore
             onDone?.Invoke(result, error);
         }
 
-        public IEnumerator GetActiveSubscription(IList<string> skus, Action<StorePurchaseInfo, string> onDone)
+        public IEnumerator GetActiveSubscription(string sku, Action<StorePurchaseInfo, string> onDone)
         {
             if (!IsInitialized)
             {
@@ -195,7 +186,7 @@ namespace VRLicensing.MetaStore
                     foreach (Purchase p in msg.Data)
                     {
                         if (p == null || string.IsNullOrEmpty(p.Sku)) continue;
-                        if (skus != null && skus.Count > 0 && !ContainsSku(skus, p.Sku)) continue;
+                        if (!string.IsNullOrEmpty(sku) && !StoreSubscription.MatchesSku(p.Sku, sku)) continue;
 
                         var info = ToPurchaseInfo(p);
                         if (!info.IsActiveNow) continue;
@@ -213,7 +204,7 @@ namespace VRLicensing.MetaStore
             onDone?.Invoke(best, error);
         }
 
-        public IEnumerator LaunchCheckout(string sku, Action<StoreCheckoutResult> onDone)
+        public IEnumerator LaunchCheckout(string checkoutSku, Action<StoreCheckoutResult> onDone)
         {
             var result = new StoreCheckoutResult { outcome = StoreCheckoutOutcome.Failed };
             if (!IsInitialized)
@@ -226,7 +217,7 @@ namespace VRLicensing.MetaStore
             bool done = false;
             try
             {
-                IAP.LaunchCheckoutFlow(sku).OnComplete(msg =>
+                IAP.LaunchCheckoutFlow(checkoutSku).OnComplete(msg =>
                 {
                     done = true;
                     if (msg.IsError)
@@ -243,6 +234,11 @@ namespace VRLicensing.MetaStore
                     }
                     result.outcome = StoreCheckoutOutcome.Completed;
                     result.purchase = msg.Data != null ? ToPurchaseInfo(msg.Data) : null;
+                    if (result.purchase != null && string.IsNullOrEmpty(result.purchase.term))
+                    {
+                        StoreSubscription.ParseCheckoutSku(checkoutSku, out _, out string term);
+                        result.purchase.term = term;
+                    }
                 });
             }
             catch (Exception e)
@@ -257,7 +253,7 @@ namespace VRLicensing.MetaStore
         }
 
         // ────────────────────────────────────────────────────────────────────
-        // Identity (phase B: server-authoritative verification)
+        // Identity (server-authoritative verification)
         // ────────────────────────────────────────────────────────────────────
 
         public IEnumerator GetUserIdentity(Action<string, string, string> onDone)
@@ -317,11 +313,49 @@ namespace VRLicensing.MetaStore
         // Helpers
         // ────────────────────────────────────────────────────────────────────
 
-        private static StorePurchaseInfo ToPurchaseInfo(Purchase p)
+        private static StoreProductInfo ToProductInfo(Product p)
         {
-            var info = new StorePurchaseInfo
+            var info = new StoreProductInfo
             {
                 sku = p.Sku,
+                name = p.Name,
+                isSubscription = p.Type == ProductType.Subscription
+            };
+
+            // Spec §1.0: one SKU per tier; each term is a BillingPlan with a PaidOffer whose
+            // SubscriptionTerm is the OfferTerm token (MONTHLY, SEMIANNUAL, ANNUAL…) and whose
+            // Price is already localized by Meta. No price is ever hard-coded here.
+            if (p.BillingPlansOptional != null)
+            {
+                foreach (BillingPlan plan in p.BillingPlansOptional)
+                {
+                    if (plan == null || plan.PaidOffer == null) continue;
+                    var paid = plan.PaidOffer;
+                    info.terms.Add(new StoreTermPrice
+                    {
+                        term = paid.SubscriptionTerm.ToString().ToUpperInvariant(),
+                        formattedPrice = paid.Price != null ? paid.Price.Formatted : null,
+                        currency = paid.Price != null ? paid.Price.Currency : null,
+                        hasTrial = plan.TrialOffersOptional != null && plan.TrialOffersOptional.Count > 0
+                    });
+                }
+            }
+
+            // A subscription product without billing plans (not expected) still shows its
+            // single price so the panel is not empty.
+            if (info.terms.Count == 0 && info.isSubscription && !string.IsNullOrEmpty(p.FormattedPrice))
+                info.terms.Add(new StoreTermPrice { term = "", formattedPrice = p.FormattedPrice });
+
+            return info;
+        }
+
+        private static StorePurchaseInfo ToPurchaseInfo(Purchase p)
+        {
+            StoreSubscription.ParseCheckoutSku(p.Sku, out string sku, out string term);
+            var info = new StorePurchaseInfo
+            {
+                sku = sku,
+                term = term,
                 purchaseId = p.ID,
                 isSubscription = p.Type == ProductType.Subscription
             };
@@ -335,13 +369,6 @@ namespace VRLicensing.MetaStore
                     ? DateTime.SpecifyKind(p.GrantTime, DateTimeKind.Utc)
                     : p.GrantTime.ToUniversalTime();
             return info;
-        }
-
-        private static bool ContainsSku(IList<string> skus, string sku)
-        {
-            for (int i = 0; i < skus.Count; i++)
-                if (string.Equals(skus[i], sku, StringComparison.OrdinalIgnoreCase)) return true;
-            return false;
         }
 
         private static string DescribeError(Error err, string fallback)
