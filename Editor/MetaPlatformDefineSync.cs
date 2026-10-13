@@ -82,8 +82,9 @@ namespace VRLicensing.Editor
     }
 
     /// <summary>
-    /// Build-time sanity check: a LicenseConfig that asks for a store platform whose SDK is
-    /// missing would silently ship as a plain build. Say so loudly in the build log.
+    /// Build-time checks for store builds. Warnings for things that silently degrade; a hard
+    /// failure for a RELEASE Meta Horizon build without enforceEntitlement (spec §1.4: it must
+    /// be ON in every store build, VRC.Quest.Security.1). Development builds only warn.
     /// </summary>
     public class StorePlatformBuildCheck : IPreprocessBuildWithReport
     {
@@ -94,12 +95,28 @@ namespace VRLicensing.Editor
             var config = Resources.Load<LicenseConfig>("LicenseConfig");
             if (config == null) return;
 
+            bool development = (report.summary.options & BuildOptions.Development) != 0;
+
+            if (config.storePlatform == StorePlatform.MetaHorizon && !config.enforceEntitlement)
+            {
+                string msg = "[VR Licensing] RELEASE CHECK: LicenseConfig.storePlatform = MetaHorizon but " +
+                             "enforceEntitlement is OFF. A Meta Horizon Store build must lock the app when the " +
+                             "app-ownership (entitlement) check fails (VRC.Quest.Security.1). Turn ON " +
+                             "'Enforce Entitlement' in Assets/Resources/LicenseConfig.asset (Tools > Blix Studios > " +
+                             "Licensing Setup) before building the store release. Development builds only warn.";
+                if (development) Debug.LogWarning(msg + " (development build — continuing)");
+                else throw new BuildFailedException(msg);
+            }
+
             if (config.storePlatform == StorePlatform.MetaHorizon && !MetaPlatformDefineSync.IsMetaPlatformInstalled())
             {
                 Debug.LogWarning("[VR Licensing] BUILD CHECK: LicenseConfig.storePlatform = MetaHorizon but " +
                                  $"{MetaPlatformDefineSync.PackageName} is not installed. The build will behave as " +
                                  "storePlatform = None (no entitlement check, no in-app subscriptions).");
             }
+
+            if (config.storePlatform == StorePlatform.MetaHorizon && string.IsNullOrWhiteSpace(config.storeSubscriptionSku))
+                Debug.LogWarning("[VR Licensing] BUILD CHECK: storeSubscriptionSku is empty; the plans column will stay hidden.");
 
             if (config.storePlatform == StorePlatform.Steam)
                 Debug.LogWarning("[VR Licensing] BUILD CHECK: storePlatform = Steam is reserved for phase 2; the build behaves as None.");
