@@ -23,8 +23,96 @@ namespace VRLicensing
         public string term;
         /// <summary>Localized price string exactly as the store formats it (e.g. "$49.99").</summary>
         public string formattedPrice;
+        /// <summary>Numeric price in hundredths as the store reports it (Price.AmountInHundredths); 0 = not provided.</summary>
+        public uint amountInHundredths;
         public string currency;
         public bool hasTrial;
+
+        /// <summary>
+        /// Numeric price: the store's amount when it gave one, otherwise a robust parse of the
+        /// formatted string. False when neither is usable.
+        /// </summary>
+        public bool TryGetAmount(out decimal amount)
+        {
+            if (amountInHundredths > 0)
+            {
+                amount = amountInHundredths / 100m;
+                return true;
+            }
+            return StorePriceParser.TryParse(formattedPrice, out amount);
+        }
+    }
+
+    /// <summary>
+    /// Reads a store-formatted price ("US$399.99", "399,99 €", "1.399,99 €", "¥39,999",
+    /// "$1,399.99", "CHF 399.–") into a decimal without knowing the locale. Currency symbols,
+    /// codes and spaces are ignored; the LAST of ',' / '.' is the decimal separator when it is
+    /// followed by 1–2 digits, otherwise every separator is a thousands separator.
+    /// </summary>
+    public static class StorePriceParser
+    {
+        public static bool TryParse(string formatted, out decimal amount)
+        {
+            amount = 0m;
+            if (string.IsNullOrWhiteSpace(formatted)) return false;
+
+            // Keep digits and the two candidate separators only. Non-ASCII digits are not
+            // expected from Meta; anything else (symbols, codes, nbsp, "–") is noise.
+            var sb = new System.Text.StringBuilder(formatted.Length);
+            foreach (char c in formatted)
+            {
+                if (c >= '0' && c <= '9') sb.Append(c);
+                else if (c == ',' || c == '.') sb.Append(c);
+            }
+            string s = sb.ToString().Trim(',', '.');
+            if (s.Length == 0) return false;
+
+            int lastComma = s.LastIndexOf(',');
+            int lastDot = s.LastIndexOf('.');
+            int last = Math.Max(lastComma, lastDot);
+
+            string integerPart, fractionPart = "";
+            if (last < 0)
+            {
+                integerPart = s;
+            }
+            else
+            {
+                char sep = s[last];
+                int digitsAfter = s.Length - last - 1;
+                int sepCount = 0;
+                foreach (char c in s) if (c == sep) sepCount++;
+
+                bool isDecimal = digitsAfter >= 1 && digitsAfter <= 2 && sepCount == 1;
+                if (isDecimal)
+                {
+                    integerPart = s.Substring(0, last);
+                    fractionPart = s.Substring(last + 1);
+                }
+                else
+                {
+                    integerPart = s; // all separators are grouping separators
+                }
+            }
+
+            integerPart = integerPart.Replace(",", "").Replace(".", "");
+            if (integerPart.Length == 0) integerPart = "0";
+            if (!decimal.TryParse(integerPart, System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out decimal whole))
+                return false;
+
+            decimal fraction = 0m;
+            if (fractionPart.Length > 0)
+            {
+                if (!decimal.TryParse(fractionPart, System.Globalization.NumberStyles.None,
+                        System.Globalization.CultureInfo.InvariantCulture, out decimal f))
+                    return false;
+                fraction = f / (fractionPart.Length == 1 ? 10m : 100m);
+            }
+
+            amount = whole + fraction;
+            return amount > 0m;
+        }
     }
 
     /// <summary>A subscription product as reported by the store (spec §1.0: one SKU per tier, terms as billing plans).</summary>
@@ -227,6 +315,71 @@ namespace VRLicensing
             if (string.IsNullOrEmpty(purchaseSku) || string.IsNullOrEmpty(sku)) return false;
             if (string.Equals(purchaseSku, sku, StringComparison.OrdinalIgnoreCase)) return true;
             return purchaseSku.StartsWith(sku + ":", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>Length of a Meta OfferTerm in months (weeks as fractions). 0 = unknown token.</summary>
+        public static decimal TermMonths(string term)
+        {
+            switch (NormalizeTerm(term))
+            {
+                case "WEEKLY": return 7m / 30m;
+                case "BIWEEKLY": return 14m / 30m;
+                case "MONTHLY": return 1m;
+                case "QUARTERLY": return 3m;
+                case "SEMIANNUAL": return 6m;
+                case "ANNUAL": return 12m;
+                case "BIANNUAL": return 24m;
+                default: return 0m;
+            }
+        }
+
+        /// <summary>
+        /// Whether the "Best value" badge may be shown on ANNUAL: only when its price per month is
+        /// STRICTLY lower than the per-month price of every other configured term, computed from
+        /// the prices the store reports. Any configured term without a readable price (missing
+        /// billing plan, unparsable string, unknown term length) → no badge.
+        /// </summary>
+        public static bool IsAnnualBestValue(StoreProductInfo product, IList<string> configuredTerms, out string reason)
+        {
+            reason = null;
+            var terms = OrderedTerms(configuredTerms);
+            if (product == null || !terms.Contains("ANNUAL"))
+            {
+                reason = "no product or ANNUAL not configured";
+                return false;
+            }
+            if (terms.Count < 2)
+            {
+                reason = "ANNUAL is the only configured term";
+                return false;
+            }
+
+            if (!PerMonth(product, "ANNUAL", out decimal annualPerMonth, out reason)) return false;
+
+            foreach (string term in terms)
+            {
+                if (term == "ANNUAL") continue;
+                if (!PerMonth(product, term, out decimal otherPerMonth, out reason)) return false;
+                if (annualPerMonth >= otherPerMonth)
+                {
+                    reason = $"ANNUAL {annualPerMonth:0.####}/month is not below {term} {otherPerMonth:0.####}/month";
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static bool PerMonth(StoreProductInfo product, string term, out decimal perMonth, out string reason)
+        {
+            perMonth = 0m;
+            reason = null;
+            StoreTermPrice plan = product.FindTerm(term);
+            if (plan == null) { reason = $"no billing plan for {term}"; return false; }
+            if (!plan.TryGetAmount(out decimal amount)) { reason = $"unreadable price for {term} ('{plan.formattedPrice}')"; return false; }
+            decimal months = TermMonths(term);
+            if (months <= 0m) { reason = $"unknown term length for {term}"; return false; }
+            perMonth = amount / months;
+            return true;
         }
     }
 

@@ -337,6 +337,7 @@ namespace VRLicensing.MetaStore
                     {
                         term = paid.SubscriptionTerm.ToString().ToUpperInvariant(),
                         formattedPrice = paid.Price != null ? paid.Price.Formatted : null,
+                        amountInHundredths = paid.Price != null ? paid.Price.AmountInHundredths : 0u,
                         currency = paid.Price != null ? paid.Price.Currency : null,
                         hasTrial = plan.TrialOffersOptional != null && plan.TrialOffersOptional.Count > 0
                     });

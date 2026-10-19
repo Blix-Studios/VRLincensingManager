@@ -109,6 +109,8 @@ namespace VRLicensing
             public Button button;
             public TextMeshProUGUI label;
             public TextMeshProUGUI badge; // ANNUAL only
+            public GameObject badgeRoot;  // the pill; shown only when ANNUAL is strictly the best value
+            public float labelRightDefault; // label offsetMax.x without the pill
             public string price;          // store-localized, set after the product is fetched
         }
 
@@ -862,9 +864,12 @@ namespace VRLicensing
 
                 if (term == "ANNUAL")
                 {
-                    // "Best value" pill at the right end of the button; the label keeps clear of it.
-                    var pill = CreatePanel(prefix + "BestValue", tb.button.GetComponent<RectTransform>(), COLOR_GREEN);
-                    var pillRt = pill.GetComponent<RectTransform>();
+                    // "Best value" pill at the right end of the button. Hidden until the store's
+                    // prices prove that ANNUAL is strictly cheaper per month than every other
+                    // configured term (StoreSubscription.IsAnnualBestValue); when shown, the
+                    // label keeps clear of it.
+                    tb.badgeRoot = CreatePanel(prefix + "BestValue", tb.button.GetComponent<RectTransform>(), COLOR_GREEN);
+                    var pillRt = tb.badgeRoot.GetComponent<RectTransform>();
                     pillRt.anchorMin = new Vector2(1f, 0.5f);
                     pillRt.anchorMax = new Vector2(1f, 0.5f);
                     pillRt.pivot = new Vector2(1f, 0.5f);
@@ -874,8 +879,8 @@ namespace VRLicensing
                         TextAlignmentOptions.Center, stretch: true, padding: new Vector4(4, 4, 2, 2));
                     tb.badge.enableWordWrapping = false;
                     tb.badge.overflowMode = TextOverflowModes.Ellipsis;
-                    var labelRt = tb.label.rectTransform;
-                    labelRt.offsetMax = new Vector2(-108, labelRt.offsetMax.y);
+                    tb.labelRightDefault = tb.label.rectTransform.offsetMax.x;
+                    SetBadgeVisible(tb, false);
                 }
 
                 tb.button.gameObject.SetActive(false);
@@ -890,6 +895,14 @@ namespace VRLicensing
 
             RefreshStoreTexts(col);
             return col;
+        }
+
+        private static void SetBadgeVisible(StoreTermButton tb, bool visible)
+        {
+            if (tb.badgeRoot == null || tb.label == null) return;
+            tb.badgeRoot.SetActive(visible);
+            var labelRt = tb.label.rectTransform;
+            labelRt.offsetMax = new Vector2(visible ? -108f : tb.labelRightDefault, labelRt.offsetMax.y);
         }
 
         /// <summary>Localized texts of the column (benefits line, badge, term labels) in the current language.</summary>
@@ -981,6 +994,16 @@ namespace VRLicensing
                 tb.button.interactable = show;
                 if (show) visible++;
             }
+
+            // "Best value" only when the store's own prices say so (strictly cheaper per month
+            // than every other configured term); otherwise the pill stays hidden.
+            bool annualBest = StoreSubscription.IsAnnualBestValue(result.product, result.terms, out string badgeReason);
+            foreach (var tb in col.buttons)
+                if (tb.badgeRoot != null) SetBadgeVisible(tb, annualBest);
+            Debug.Log(annualBest
+                ? "[VR Licensing] 'Best value' badge shown on ANNUAL (strictly cheapest per month)."
+                : $"[VR Licensing] 'Best value' badge hidden — {badgeReason}.");
+
             RefreshStoreTexts(col);
 
             if (visible == 0)

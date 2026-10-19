@@ -102,11 +102,41 @@ namespace VRLicensing
 
         // ── Fake store ──
 
-        private static readonly Dictionary<string, string> FakePrices = new Dictionary<string, string>
+        // Catalogue prices decided 2026-10-19 (99-DECISIONS.md): MONTHLY 39.99 / SEMIANNUAL 199.99 /
+        // ANNUAL 399.99. The annual can be overridden (menu) to test the "Best value" rule.
+        private const string PREF_ANNUAL_CENTS = "VRLicensing.StoreStub.AnnualCents";
+        public const uint DefaultAnnualCents = 39999;
+        public const uint CheapAnnualCents = 34999;
+
+        public static uint AnnualCents
         {
-            { "MONTHLY", "US$49.00 (stub)" },
-            { "SEMIANNUAL", "US$249.00 (stub)" },
-            { "ANNUAL", "US$399.00 (stub)" },
+            get => (uint)EditorPrefs.GetInt(PREF_ANNUAL_CENTS, (int)DefaultAnnualCents);
+            set => EditorPrefs.SetInt(PREF_ANNUAL_CENTS, (int)value);
+        }
+
+        [MenuItem("Tools/Blix Studios/Licensing/Store stub: annual 349.99 instead of 399.99 (toggle)")]
+        private static void ToggleCheapAnnual()
+        {
+            AnnualCents = AnnualCents == CheapAnnualCents ? DefaultAnnualCents : CheapAnnualCents;
+            Debug.Log($"[VR Licensing] Stub annual price: {AnnualCents / 100m:0.00}");
+        }
+
+        private static List<StoreTermPrice> FakePrices()
+        {
+            return new List<StoreTermPrice>
+            {
+                Fake("MONTHLY", 3999),
+                Fake("SEMIANNUAL", 19999),
+                Fake("ANNUAL", AnnualCents),
+            };
+        }
+
+        private static StoreTermPrice Fake(string term, uint cents) => new StoreTermPrice
+        {
+            term = term,
+            amountInHundredths = cents,
+            formattedPrice = "US$" + (cents / 100m).ToString("0.00", CultureInfo.InvariantCulture) + " (stub)",
+            currency = "USD"
         };
 
         public StorePlatform Platform => StorePlatform.MetaHorizon;
@@ -132,8 +162,7 @@ namespace VRLicensing
         {
             yield return null;
             var product = new StoreProductInfo { sku = sku, name = "Stub subscription", isSubscription = true };
-            foreach (var kv in FakePrices)
-                product.terms.Add(new StoreTermPrice { term = kv.Key, formattedPrice = kv.Value, currency = "USD" });
+            product.terms.AddRange(FakePrices());
             onDone?.Invoke(product, null);
         }
 
