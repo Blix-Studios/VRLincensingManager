@@ -1102,6 +1102,19 @@ namespace VRLicensing
         }
 
         /// <summary>
+        /// Watchdog entry point (called by the UI, which lives on another GameObject): the demo
+        /// limit has been crossed but the demo is still in <see cref="LicenseState.Demo"/>. Ends
+        /// it through <see cref="DemoModeManager.ForceExpire"/>, which raises OnDemoExpired and
+        /// therefore the normal expired-panel path.
+        /// </summary>
+        public void ForceDemoExpiry(string reason)
+        {
+            if (CurrentState != LicenseState.Demo || demoManager == null) return;
+            Debug.LogWarning($"[VR Licensing] Demo limit crossed without expiry event — forcing ({reason}).");
+            demoManager.ForceExpire(reason);
+        }
+
+        /// <summary>
         /// Forces an online re-validation of the current license.
         /// Useful for re-sync after being offline.
         /// </summary>

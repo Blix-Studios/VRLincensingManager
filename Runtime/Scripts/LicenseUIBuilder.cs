@@ -2253,6 +2253,7 @@ namespace VRLicensing
         }
 
         private int lastHudSecond = -1;
+        private float demoZeroSince = -1f; // watchdog: when the countdown first hit zero in Demo state
 
         private void Update()
         {
@@ -2302,6 +2303,23 @@ namespace VRLicensing
             // Rebuilding the TMP mesh every frame forces a canvas rebuild every frame;
             // the label only changes once per second, so only touch it then.
             float remaining = Mathf.Max(0f, demoManagerRef.RemainingDemoSeconds);
+
+            // Watchdog: this component lives on its own GameObject. If the countdown has sat at
+            // zero for a couple of seconds while the manager is still in Demo, the manager's own
+            // Update did not end the demo (seen on a Quest 3: 16 min counted, no expired panel) —
+            // end it from here so the paywall always appears.
+            if (remaining <= 0f && manager != null && manager.CurrentState == LicenseState.Demo)
+            {
+                demoZeroSince = demoZeroSince < 0f ? Time.unscaledTime : demoZeroSince;
+                if (Time.unscaledTime - demoZeroSince > 2f)
+                {
+                    demoZeroSince = -1f;
+                    manager.ForceDemoExpiry("HUD watchdog");
+                    return;
+                }
+            }
+            else demoZeroSince = -1f;
+
             int wholeSecond = Mathf.CeilToInt(remaining);
             if (wholeSecond == lastHudSecond) return;
             lastHudSecond = wholeSecond;

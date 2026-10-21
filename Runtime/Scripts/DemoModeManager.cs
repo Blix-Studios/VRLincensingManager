@@ -47,6 +47,10 @@ namespace VRLicensing
             demoLimitSeconds = limitSeconds;
             sessionStartTime = Time.unscaledTime;
             isActive = true;
+            nextDiagAt = Time.unscaledTime + DIAG_INTERVAL;
+
+            Diag($"StartDemo limit={limitSeconds:F0}s stored={SecureLicenseStorage.GetDemoUsedSeconds():F1}s " +
+                 $"unscaledTime={Time.unscaledTime:F1} realtime={Time.realtimeSinceStartup:F1}");
 
             // Check if already expired from previous sessions
             if (IsDemoExpired)
@@ -54,6 +58,31 @@ namespace VRLicensing
                 isActive = false;
                 OnDemoExpired?.Invoke();
             }
+        }
+
+        /// <summary>
+        /// Ends the demo from outside (watchdog in the UI, see LicenseUIBuilder) when the limit
+        /// has been crossed but <see cref="Update"/> has not fired the event. Persists the time
+        /// and raises <see cref="OnDemoExpired"/> exactly like the normal path. No-op when the
+        /// demo is not active.
+        /// </summary>
+        public void ForceExpire(string reason)
+        {
+            if (!isActive) return;
+            Diag($"ForceExpire ({reason}) total={TotalDemoUsedSeconds:F1}s limit={demoLimitSeconds:F0}s");
+            PersistSessionTime();
+            isActive = false;
+            Debug.LogWarning($"[VR Licensing] Demo time expired (forced by {reason}).");
+            OnDemoExpired?.Invoke();
+        }
+
+        // ── Development-build diagnostics (never logged in release builds) ──
+        private const float DIAG_INTERVAL = 30f;
+        private float nextDiagAt;
+
+        private void Diag(string message)
+        {
+            if (Debug.isDebugBuild) Debug.Log("[VR Licensing] demo: " + message);
         }
 
         /// <summary>
@@ -82,6 +111,14 @@ namespace VRLicensing
         {
             if (!isActive) return;
 
+            if (Debug.isDebugBuild && Time.unscaledTime >= nextDiagAt)
+            {
+                nextDiagAt = Time.unscaledTime + DIAG_INTERVAL;
+                Diag($"tick total={TotalDemoUsedSeconds:F1}s session={CurrentSessionDemoSeconds:F1}s " +
+                     $"remaining={RemainingDemoSeconds:F1}s limit={demoLimitSeconds:F0}s " +
+                     $"unscaledTime={Time.unscaledTime:F1} realtime={Time.realtimeSinceStartup:F1}");
+            }
+
             if (IsDemoExpired)
             {
                 PersistSessionTime();
@@ -93,6 +130,8 @@ namespace VRLicensing
 
         private void OnApplicationPause(bool paused)
         {
+            Diag($"OnApplicationPause({paused}) active={isActive} total={TotalDemoUsedSeconds:F1}s " +
+                 $"unscaledTime={Time.unscaledTime:F1} realtime={Time.realtimeSinceStartup:F1}");
             if (!isActive) return;
 
             if (paused)
@@ -103,6 +142,16 @@ namespace VRLicensing
             {
                 sessionStartTime = Time.unscaledTime;
             }
+        }
+
+        private void OnApplicationFocus(bool focus)
+        {
+            Diag($"OnApplicationFocus({focus}) active={isActive} total={TotalDemoUsedSeconds:F1}s");
+        }
+
+        private void OnDisable()
+        {
+            Diag($"OnDisable active={isActive} total={TotalDemoUsedSeconds:F1}s");
         }
 
         private void OnApplicationQuit()
