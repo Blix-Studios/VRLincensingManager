@@ -89,6 +89,20 @@ namespace VRLicensing
         private const float STORE_INIT_TIMEOUT = 10f; // VRC.Quest.Security.1: entitlement within 10 s
         private const float ENTITLEMENT_QUIT_DELAY = 10f;
 
+        // Platform SDK callbacks only arrive while the app runs (Callback.RunCallbacks in Update),
+        // so time spent paused behind a system dialog (permissions, "Restore app", Guardian…) must
+        // not count against the entitlement deadline — a 15 s dialog at boot used to end in
+        // "entitlement check failed → quit". Active time = realtime minus paused time.
+        private float pausedAccum;
+        private float pausedAt = -1f;
+        private float ActiveTime => Time.realtimeSinceStartup - pausedAccum;
+
+        private void OnApplicationPause(bool paused)
+        {
+            if (paused) { if (pausedAt < 0f) pausedAt = Time.realtimeSinceStartup; }
+            else if (pausedAt >= 0f) { pausedAccum += Time.realtimeSinceStartup - pausedAt; pausedAt = -1f; }
+        }
+
         /// <summary>
         /// Current state of the licensing system.
         /// </summary>
@@ -454,12 +468,12 @@ namespace VRLicensing
         {
             if (storeProvider == null) yield break;
 
-            float deadline = Time.realtimeSinceStartup + STORE_INIT_TIMEOUT;
+            float deadline = ActiveTime + STORE_INIT_TIMEOUT;
 
             bool initDone = false, initOk = false;
             string initError = null;
             Coroutine initCo = StartCoroutine(storeProvider.Initialize((ok, err) => { initDone = true; initOk = ok; initError = err; }));
-            while (!initDone && Time.realtimeSinceStartup < deadline) yield return null;
+            while (!initDone && ActiveTime < deadline) yield return null;
 
             if (!initDone)
             {
@@ -484,7 +498,7 @@ namespace VRLicensing
             bool entDone = false, entOk = false;
             string entError = null;
             Coroutine entCo = StartCoroutine(storeProvider.CheckEntitlement((ok, err) => { entDone = true; entOk = ok; entError = err; }));
-            while (!entDone && Time.realtimeSinceStartup < deadline) yield return null;
+            while (!entDone && ActiveTime < deadline) yield return null;
 
             if (!entDone)
             {
@@ -495,7 +509,7 @@ namespace VRLicensing
             storeInitCompleted = true;
             if (entOk)
             {
-                Debug.Log($"[VR Licensing] Store entitlement check passed ({Time.realtimeSinceStartup:F1} s since start).");
+                Debug.Log($"[VR Licensing] Store entitlement check passed ({Time.realtimeSinceStartup:F1} s since start, {pausedAccum:F1} s of it paused).");
                 FinishEntitlement(true, null);
             }
             else
