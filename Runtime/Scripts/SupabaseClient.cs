@@ -578,6 +578,7 @@ namespace VRLicensing
         public int session_count;
         public PromoData promo;         // active promotion for this product, or empty
         public StoreStatus store;       // v1.12: only when p_store_user_id was sent
+        public string demo_reset_at;    // v1.12.0-pre.7: ISO date of the last admin demo reset, or null
     }
 
     /// <summary>

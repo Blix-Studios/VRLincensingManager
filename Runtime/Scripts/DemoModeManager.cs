@@ -96,6 +96,18 @@ namespace VRLicensing
         }
 
         /// <summary>
+        /// Adopts the server's total after an admin reset (v1.12.0-pre.7): the stored value
+        /// becomes <paramref name="seconds"/> and, if a demo session is running, its stopwatch
+        /// restarts now so the time already counted into the old total is not added again.
+        /// </summary>
+        public void AdoptServerTotal(float seconds)
+        {
+            SecureLicenseStorage.SetDemoUsedSeconds(Mathf.Max(0f, seconds));
+            if (isActive) sessionStartTime = Time.unscaledTime;
+            Diag($"AdoptServerTotal {seconds:F1}s active={isActive}");
+        }
+
+        /// <summary>
         /// Resets demo usage (e.g., for admin/debug purposes).
         /// </summary>
         public void ResetDemo()

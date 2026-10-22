@@ -21,6 +21,7 @@ namespace VRLicensing
         private const string INTEGRITY_SEAL_KEY = "vrl_seal";
         private const string FIRST_RUN_KEY = "vrl_init";
         private const string STORE_ENTITLEMENT_KEY = "vrl_store_entitlement"; // v1.12
+        private const string DEMO_RESET_KEY = "vrl_demo_reset";                // v1.12.0-pre.7
 
         private static byte[] GetEncryptionKey()
         {
@@ -128,6 +129,8 @@ namespace VRLicensing
             // tampered on their first launch after the update.
             string store = PlayerPrefs.GetString(STORE_ENTITLEMENT_KEY, "");
             if (!string.IsNullOrEmpty(store)) payload += "|" + store;
+            string reset = PlayerPrefs.GetString(DEMO_RESET_KEY, "");
+            if (!string.IsNullOrEmpty(reset)) payload += "|" + reset;
 
             byte[] hmacKey = GetHMACKey();
             using (var hmac = new HMACSHA256(hmacKey))
@@ -190,6 +193,7 @@ namespace VRLicensing
             PlayerPrefs.DeleteKey(DEMO_USED_KEY);
             PlayerPrefs.DeleteKey(HKT_KEY);
             PlayerPrefs.DeleteKey(SESSION_USED_KEY);
+            PlayerPrefs.DeleteKey(DEMO_RESET_KEY);
             PlayerPrefs.DeleteKey(INTEGRITY_SEAL_KEY);
             PlayerPrefs.DeleteKey(FIRST_RUN_KEY);
             PlayerPrefs.DeleteKey(STORE_ENTITLEMENT_KEY);
@@ -265,6 +269,31 @@ namespace VRLicensing
         {
             string encrypted = Encrypt(seconds.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
             PlayerPrefs.SetString(DEMO_USED_KEY, encrypted);
+            UpdateIntegritySeal();
+            PlayerPrefs.Save();
+        }
+
+        #endregion
+
+        #region Demo Reset Marker (Encrypted, v1.12.0-pre.7)
+
+        /// <summary>The server's demo_reset_at last applied on this device ("" if none).</summary>
+        public static string GetDemoResetMarker()
+        {
+            try
+            {
+                string encrypted = PlayerPrefs.GetString(DEMO_RESET_KEY, "");
+                return string.IsNullOrEmpty(encrypted) ? "" : Decrypt(encrypted);
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        public static void SetDemoResetMarker(string isoDate)
+        {
+            PlayerPrefs.SetString(DEMO_RESET_KEY, Encrypt(isoDate ?? ""));
             UpdateIntegritySeal();
             PlayerPrefs.Save();
         }

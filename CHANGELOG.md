@@ -26,7 +26,13 @@ test builds for VirtualChainsaw; the final tag is cut only after QA on the heads
   behind a system dialog (permissions, "Restore app", Guardian): Platform SDK callbacks cannot
   arrive while paused, and a dialog longer than 10 s at boot ended in "entitlement check failed →
   quit" with `enforceEntitlement` on.
-- No contract change (RPCs, Edge Function, LicenseConfig fields unchanged).
+- **Admin demo reset reaches the headset.** `get_device_status` / `report_device_session` now
+  return `demo_reset_at` (web migration `20261022100000_device_rpcs_return_demo_reset_at`).
+  The first time the client sees a new date it adopts the server's (lower) total, restarts the
+  running demo stopwatch and remembers the date (encrypted, sealed), instead of re-pushing its
+  old local total as a delta — which is what undid every reset until now. Servers without the
+  field behave exactly as before; the additive-delta contract is unchanged.
+- No other contract change (Edge Function, LicenseConfig fields unchanged).
 
 ## 1.12.0-pre.6 — 2026-10-21
 

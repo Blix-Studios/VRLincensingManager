@@ -405,6 +405,7 @@ namespace VRLicensing
                         serverDemoBlocked = status.demo_blocked;
                         serverDemoUsed = status.demo_used_seconds;
                         serverReportedDemo = status.demo_used_seconds;
+                        ApplyServerDemoReset(status);
                         ActivePromo = (status.promo != null && status.promo.IsValid) ? status.promo : null;
 
                         // If server has more demo time used than local, trust the server
@@ -1278,6 +1279,36 @@ namespace VRLicensing
         }
 
         /// <summary>
+        /// v1.12.0-pre.7 - admin demo reset. The server only ever ADDS usage (contract section 2),
+        /// so a reset from /admin/devices is signalled by a newer <c>demo_reset_at</c>: the first
+        /// time a given date is seen, the server's (lower) total is adopted instead of being
+        /// treated as "server behind local" and re-pushed as a delta. The date is remembered
+        /// (encrypted, sealed) so the same reset is never applied twice. Servers without the
+        /// field change nothing. Returns true when the local total was lowered to the server's.
+        /// </summary>
+        private bool ApplyServerDemoReset(DeviceStatus status)
+        {
+            if (status == null || string.IsNullOrEmpty(status.demo_reset_at)) return false;
+            string applied = SecureLicenseStorage.GetDemoResetMarker();
+            if (applied == status.demo_reset_at) return false;
+
+            float local = SecureLicenseStorage.GetDemoUsedSeconds();
+            if (demoManager != null && demoManager.CurrentSessionDemoSeconds > 0f)
+                local += demoManager.CurrentSessionDemoSeconds;
+
+            bool lowered = status.demo_used_seconds < local;
+            if (lowered)
+            {
+                Debug.Log($"[VR Licensing] Admin demo reset ({status.demo_reset_at}) applied: " +
+                          $"{local:F0}s -> {status.demo_used_seconds:F0}s.");
+                if (demoManager != null) demoManager.AdoptServerTotal(status.demo_used_seconds);
+                else SecureLicenseStorage.SetDemoUsedSeconds(status.demo_used_seconds);
+            }
+            SecureLicenseStorage.SetDemoResetMarker(status.demo_reset_at);
+            return lowered;
+        }
+
+        /// <summary>
         /// Reports demo usage to the server as a positive delta (server ADDS it and
         /// never lowers the counter). Keeps <see cref="serverReportedDemo"/> in sync so
         /// repeated calls only send newly-consumed time, and adopts the server total if
@@ -1297,6 +1328,7 @@ namespace VRLicensing
                     {
                         serverReportedDemo = status.demo_used_seconds;
                         ActivePromo = (status.promo != null && status.promo.IsValid) ? status.promo : null;
+                        if (ApplyServerDemoReset(status)) localDemo = status.demo_used_seconds;
                         if (status.demo_used_seconds > localDemo)
                             SecureLicenseStorage.SetDemoUsedSeconds(status.demo_used_seconds);
                     }
