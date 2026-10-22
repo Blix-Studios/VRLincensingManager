@@ -196,6 +196,7 @@ namespace VRLicensing
         {
             EnsurePositioned();
             overlayPanel.SetActive(true);
+            if (plansPanel != null) plansPanel.SetActive(false);
             welcomePanel.SetActive(true);
             keyInputPanel.SetActive(false);
             demoExpiredPanel.SetActive(false);
@@ -214,6 +215,11 @@ namespace VRLicensing
                 $"Free demo: {FormatDuration(remaining)} remaining of {FormatDuration(config.demoDurationSeconds)}";
             welcomeInfoText.color = COLOR_TEXT_DIM;
             welcomeInfoText.fontStyle = FontStyles.Italic;
+            if (welcomeSubscribeLabel != null)
+            {
+                string sub = LicenseStrings.Subscribe();
+                welcomeSubscribeLabel.text = CanRender(welcomeSubscribeLabel, sub) ? sub : LicenseStrings.Subscribe("en");
+            }
             RefreshDeviceCodes();
         }
 
@@ -222,6 +228,7 @@ namespace VRLicensing
         {
             EnsurePositioned();
             overlayPanel.SetActive(true);
+            if (plansPanel != null) plansPanel.SetActive(false);
             welcomePanel.SetActive(false);
             keyInputPanel.SetActive(true);
             demoExpiredPanel.SetActive(false);
@@ -241,6 +248,7 @@ namespace VRLicensing
         {
             EnsurePositioned();
             overlayPanel.SetActive(true);
+            if (plansPanel != null) plansPanel.SetActive(false);
             welcomePanel.SetActive(false);
             keyInputPanel.SetActive(false);
             demoExpiredPanel.SetActive(true);
@@ -263,6 +271,7 @@ namespace VRLicensing
         {
             EnsurePositioned();
             overlayPanel.SetActive(true);
+            if (plansPanel != null) plansPanel.SetActive(false);
             welcomePanel.SetActive(false);
             keyInputPanel.SetActive(false);
             demoExpiredPanel.SetActive(false);
@@ -301,6 +310,7 @@ namespace VRLicensing
         {
             HideDemoTimer();
             EnsurePositioned();
+            if (plansPanel != null) plansPanel.SetActive(false);
             if (successAnimating) return;
 
             string title = alreadyActive ? "Subscription active" : "Thank you for subscribing!";
@@ -364,6 +374,7 @@ namespace VRLicensing
         {
             HideDemoTimer();
             EnsurePositioned();
+            if (plansPanel != null) plansPanel.SetActive(false);
             if (successAnimating) return;
 
             string title = alreadyActive ? "License active" : "¡Key redeemed successfully!";
@@ -445,6 +456,7 @@ namespace VRLicensing
             BuildKeyInputPanel();
             BuildDemoExpiredPanel();
             BuildLicenseExpiredPanel();
+            BuildPlansPanel();
             BuildSuccessPanel();
             BuildDemoTimer();
 
@@ -658,6 +670,18 @@ namespace VRLicensing
                 COLOR_GREEN, COLOR_GREEN_HOVER,
                 OnStartDemoClicked);
 
+            // Button 1b (store builds, v1.12.0-pre.8): subscribe before the demo is even started.
+            // Same plans column as the expired panels — Meta prices only, no URL/QR/promo.
+            if (storeOffersEnabled)
+            {
+                var sub = CreateLayoutButton("SubscribeBtn", btnContRt,
+                    LicenseStrings.Subscribe("en"), 45,
+                    COLOR_ACCENT, COLOR_ACCENT_HOVER,
+                    OnSubscribeClicked);
+                welcomeSubscribeLabel = sub.GetComponentInChildren<TextMeshProUGUI>();
+                btnContRt.sizeDelta = new Vector2(400, 220);
+            }
+
             // Button 2: Enter License Key (blue accent)
             CreateLayoutButton("EnterKeyBtn", btnContRt,
                 "Enter License Key", 45,
@@ -821,6 +845,107 @@ namespace VRLicensing
             CreateDeviceCodeFooter(panelRt);
 
             demoExpiredPanel.SetActive(false);
+        }
+
+        // ─────────────────── PLANS PANEL (v1.12.0-pre.8) ───────────────────
+        // The same plans column as the expired panels, reachable BEFORE the demo expires:
+        // from the welcome panel ("Subscribe") and from the game (LicenseManager.ShowPlans(),
+        // e.g. a pause-menu button). Store builds only; nothing is built otherwise.
+
+        private GameObject plansPanel;
+        private StoreColumn plansStoreColumn;
+        private TextMeshProUGUI plansHint;
+        private TextMeshProUGUI plansBackLabel;
+        private TextMeshProUGUI welcomeSubscribeLabel;
+
+        private void BuildPlansPanel()
+        {
+            if (!storeOffersEnabled) return;
+            var overlayRt = overlayPanel.GetComponent<RectTransform>();
+
+            plansPanel = CreatePanel("PlansPanel", overlayRt, COLOR_PANEL_BG);
+            var panelRt = plansPanel.GetComponent<RectTransform>();
+            panelRt.anchorMin = new Vector2(0.5f, 0.5f);
+            panelRt.anchorMax = new Vector2(0.5f, 0.5f);
+            panelRt.sizeDelta = new Vector2(560, 460);
+            panelRt.anchoredPosition = Vector2.zero;
+
+            var header = CreatePanel("PlansHeader", panelRt, COLOR_PANEL_HEADER);
+            var headerRt = header.GetComponent<RectTransform>();
+            headerRt.anchorMin = new Vector2(0f, 1f);
+            headerRt.anchorMax = new Vector2(1f, 1f);
+            headerRt.pivot = new Vector2(0.5f, 1f);
+            headerRt.sizeDelta = new Vector2(0, 60);
+            headerRt.anchoredPosition = Vector2.zero;
+
+            CreateTMPText("PlansTitle", headerRt,
+                config.appDisplayName,
+                20, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
+                stretch: true, padding: new Vector4(20, 20, 0, 0));
+
+            // Single centred column (title, benefits, one button per term, status).
+            plansStoreColumn = BuildStoreColumn(panelRt, 0f, "Plans");
+            plansStoreColumn.rt.anchoredPosition = new Vector2(0f, -10f);
+
+            plansHint = CreateTMPText("PlansHint", panelRt,
+                "", 13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
+                size: new Vector2(480, 40), pos: new Vector2(0, -10));
+
+            var back = CreatePositionedButton("PlansBack", panelRt,
+                LicenseStrings.Back("en"), new Vector2(200, 38), new Vector2(0, 30),
+                COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnPlansBackClicked,
+                anchorAtBottom: true);
+            plansBackLabel = back.GetComponentInChildren<TextMeshProUGUI>();
+
+            CreateDeviceCodeFooter(panelRt);
+
+            plansPanel.SetActive(false);
+        }
+
+        /// <summary>
+        /// Shows the plans panel on its own (no key column). <paramref name="fromDemo"/> hides the
+        /// demo HUD while the panel is open; the manager has already paused the stopwatch.
+        /// </summary>
+        public void ShowPlans(bool fromDemo)
+        {
+            if (plansPanel == null) return;
+            EnsurePositioned();
+            overlayPanel.SetActive(true);
+            welcomePanel.SetActive(false);
+            keyInputPanel.SetActive(false);
+            demoExpiredPanel.SetActive(false);
+            licenseExpiredPanel.SetActive(false);
+            successPanel.SetActive(false);
+            plansPanel.SetActive(true);
+            if (fromDemo) HideDemoTimer();
+
+            if (plansHint != null) plansHint.text = "";
+            if (plansBackLabel != null)
+            {
+                string back = LicenseStrings.Back();
+                plansBackLabel.text = CanRender(plansBackLabel, back) ? back : LicenseStrings.Back("en");
+            }
+            RefreshDeviceCodes();
+            StartPopulate(plansStoreColumn, null, null);
+        }
+
+        /// <summary>Hides the plans panel; the caller decides what to show next.</summary>
+        public void HidePlans()
+        {
+            if (plansPanel == null) return;
+            if (plansStoreColumn != null && plansStoreColumn.populate != null)
+            {
+                StopCoroutine(plansStoreColumn.populate);
+                plansStoreColumn.populate = null;
+            }
+            plansPanel.SetActive(false);
+        }
+
+        private void OnPlansBackClicked()
+        {
+            if (manager != null) manager.ClosePlans();
+            else HidePlans();
         }
 
         // ─────────────────── STORE SUBSCRIPTION COLUMN (v1.12) ───────────────────
@@ -1056,6 +1181,8 @@ namespace VRLicensing
         {
             if (!col.collapsed)
                 Debug.Log($"[VR Licensing] Store plans hidden — {reason}. Showing the license-key column only.");
+            if (col == plansStoreColumn && plansHint != null)
+                plansHint.text = "Plans are not available right now. Please try again later.";
             col.collapsed = true;
             col.root.SetActive(false);
             if (divider != null) divider.SetActive(false);
@@ -1064,6 +1191,7 @@ namespace VRLicensing
 
         private void ExpandStoreColumn(StoreColumn col, GameObject divider, RectTransform keyColumn)
         {
+            if (col == plansStoreColumn && plansHint != null) plansHint.text = "";
             col.collapsed = false;
             col.root.SetActive(true);
             if (divider != null) divider.SetActive(true);
@@ -1536,6 +1664,11 @@ namespace VRLicensing
         private void OnStartDemoClicked()
         {
             manager.StartDemoMode();
+        }
+
+        private void OnSubscribeClicked()
+        {
+            if (manager != null) manager.ShowPlans();
         }
 
         private void OnEnterKeyClicked()

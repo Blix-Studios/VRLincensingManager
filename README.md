@@ -97,6 +97,25 @@ Spec: `06-LICENSING-V1.12-SPEC.md` (VRInstructorRef). Everything below is additi
 | Branding / telemetry | Now through `get_license_branding` / `report_telemetry` RPCs; falls back to the pre-1.12 direct table access while they return 404 (not deployed). |
 | Server verification | Always on: `verify-store-entitlement` Edge Function (Meta user id + `Users.GetUserProof` nonce), `p_store_user_id` on `get_device_status`, `p_events` on `report_device_session` (events carry name, SKU, term and time — never the Meta user id). While the function is not deployed the call fails and the app stays locked with the "internet needed" notice; use the editor stub to test. |
 
+### Plans before / during the demo (v1.12.0-pre.8)
+
+Store builds show a localized **Subscribe** button on the welcome panel. To offer the plans
+while the demo is running, call `LicenseManager.ShowPlans()` from your own UI — the recommended
+place is the game's pause menu:
+
+```csharp
+var manager = FindFirstObjectByType<VRLicensing.LicenseManager>();
+// show the button only while it makes sense:
+bool show = manager != null && manager.StoreOffersEnabled && manager.CurrentState == VRLicensing.LicenseState.Demo;
+// on click:
+manager.ShowPlans();   // pauses the demo stopwatch; "Back" resumes it, a purchase unlocks
+```
+
+Label it with `VRLicensing.LicenseStrings.Subscribe()` (11 languages). `ShowPlans()` is a no-op
+in any state other than `Unlicensed` / `Demo` and without a store platform, so the wiring is
+safe in company APKs too. VirtualChainsaw does this with `PauseMenuSubscribeButton`, a small
+component on the pause-menu panel that clones one of the existing buttons at runtime.
+
 Unknown license statuses (e.g. `revoked`) deserialize without error and are treated as "not valid" with the server's message; an online re-validation that returns any verdict other than a connection error drops the cached license immediately.
 
 ## Testing with Sandbox Licenses

@@ -3,6 +3,23 @@
 All notable changes to `com.blixstudios.vr-licensing`. Pre-release tags (`vX.Y.Z-pre.N`) are
 test builds for VirtualChainsaw; the final tag is cut only after QA on the headset.
 
+## 1.12.0-pre.8 — unreleased (branch feature/v1.12-pre8-plans-in-demo)
+
+- **Plans before and during the demo** (store builds only). The welcome panel gains a localized
+  "Subscribe" button (11 languages) next to "Start Free Demo", and `LicenseManager.ShowPlans()`
+  is public so a project can open the same plans panel from its own UI (e.g. a pause menu).
+  The panel is the existing plans column on its own — Meta prices, data-driven "Best value"
+  badge, benefits line, active-subscription detection — plus a localized "Back" button. No
+  URL, QR or price outside Meta (App Policies 1.1).
+- Opened during the demo, the demo stopwatch is **paused** (time used is persisted, HUD hidden)
+  and resumes on "Back" with exactly the remaining time; a purchase ends the demo through the
+  normal `SubscribedViaStore` path. `ShowPlans()` is a no-op outside `Unlicensed` / `Demo` or
+  without a store platform, so buttons can be wired unconditionally.
+- Per-project integration (see README): add a "Subscribe" entry to the game's pause menu that
+  calls `ShowPlans()` and shows itself only while `CurrentState == Demo && StoreOffersEnabled`
+  (VirtualChainsaw: `PauseMenuSubscribeButton` on the rig prefab's pause menu).
+- No contract change (RPCs, Edge Function, LicenseConfig fields unchanged).
+
 ## 1.12.0-pre.7 — 2026-10-22
 
 - **Meta store provider survives IL2CPP stripping.** `VRLicensing.MetaStore` is referenced by

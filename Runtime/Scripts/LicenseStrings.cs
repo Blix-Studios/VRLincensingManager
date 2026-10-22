@@ -127,6 +127,43 @@ namespace VRLicensing
             }
         }
 
+        // v1.12.0-pre.8: plans can be opened before / during the demo.
+        private static readonly Dictionary<string, string> SubscribeLabels = new Dictionary<string, string>
+        {
+            { "en", "Subscribe" },
+            { "es", "Suscribirse" },
+            { "fr", "S'abonner" },
+            { "de", "Abonnieren" },
+            { "it", "Abbonati" },
+            { "pt", "Assinar" },
+            { "ru", "Подписаться" },
+            { "zh", "订阅" },
+            { "hi", "सदस्यता लें" },
+            { "fi", "Tilaa" },
+            { "sv", "Prenumerera" },
+        };
+
+        private static readonly Dictionary<string, string> BackLabels = new Dictionary<string, string>
+        {
+            { "en", "Back" },
+            { "es", "Volver" },
+            { "fr", "Retour" },
+            { "de", "Zurück" },
+            { "it", "Indietro" },
+            { "pt", "Voltar" },
+            { "ru", "Назад" },
+            { "zh", "返回" },
+            { "hi", "वापस" },
+            { "fi", "Takaisin" },
+            { "sv", "Tillbaka" },
+        };
+
+        /// <summary>"Subscribe" button label (welcome panel, game pause menu).</summary>
+        public static string Subscribe(string language = null) => Pick(SubscribeLabels, language ?? CurrentLanguage);
+
+        /// <summary>"Back" button label (plans panel).</summary>
+        public static string Back(string language = null) => Pick(BackLabels, language ?? CurrentLanguage);
+
         private static string Pick(Dictionary<string, string> table, string language)
         {
             if (language != null && table.TryGetValue(language, out string s)) return s;

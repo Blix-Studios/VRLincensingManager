@@ -151,6 +151,9 @@ namespace VRLicensing
         /// </summary>
         public StorePlatform EffectiveStorePlatform => effectiveStorePlatform;
 
+        /// <summary>True when subscription plans can be offered (storePlatform resolved to MetaHorizon).</summary>
+        public bool StoreOffersEnabled => effectiveStorePlatform == StorePlatform.MetaHorizon;
+
         /// <summary>Store provider in use, or null when <see cref="EffectiveStorePlatform"/> is None.</summary>
         public IStorePlatformProvider StoreProvider => storeProvider;
 
@@ -617,6 +620,7 @@ namespace VRLicensing
             cachedStoreEntitlement = data;
             if (!string.IsNullOrEmpty(data.store_user_id)) storeUserId = data.store_user_id;
             demoManager.StopDemo();
+            plansPausedDemo = false;
             SetState(LicenseState.SubscribedViaStore);
             sessionTracker.StartTracking();
             clockGuard.UpdateHighestKnownTime();
@@ -1114,6 +1118,65 @@ namespace VRLicensing
             SetState(LicenseState.Demo);
             demoManager.StartDemo(config.demoDurationSeconds);
             sessionTracker.StartTracking();
+        }
+
+        // ─────────────── Plans before / during the demo (v1.12.0-pre.8) ───────────────
+
+        private bool plansPausedDemo;
+
+        /// <summary>
+        /// Opens the subscription plans panel (store builds only). Allowed while
+        /// <see cref="LicenseState.Unlicensed"/> (welcome panel) and <see cref="LicenseState.Demo"/>
+        /// (e.g. from the game's pause menu). During the demo the stopwatch is paused until
+        /// <see cref="ClosePlans"/>; a purchase ends the demo through the normal
+        /// <see cref="LicenseState.SubscribedViaStore"/> path. No-op in any other state or
+        /// without a store platform, so projects can wire a button unconditionally.
+        /// </summary>
+        public void ShowPlans()
+        {
+            if (!StoreOffersEnabled || uiBuilder == null)
+            {
+                Debug.Log("[VR Licensing] ShowPlans ignored — no store platform or UI.");
+                return;
+            }
+            if (CurrentState != LicenseState.Unlicensed && CurrentState != LicenseState.Demo)
+            {
+                Debug.Log($"[VR Licensing] ShowPlans ignored in state {CurrentState}.");
+                return;
+            }
+
+            bool fromDemo = CurrentState == LicenseState.Demo;
+            if (fromDemo && demoManager != null && !plansPausedDemo)
+            {
+                demoManager.StopDemo(); // persists the time used so far and stops the stopwatch
+                plansPausedDemo = true;
+                Debug.Log("[VR Licensing] Plans opened during the demo — demo paused.");
+            }
+            uiBuilder.ShowPlans(fromDemo);
+        }
+
+        /// <summary>
+        /// Closes the plans panel without buying: back to the welcome panel, or back into the
+        /// demo with the stopwatch running again (the remaining time is exactly what it was).
+        /// </summary>
+        public void ClosePlans()
+        {
+            if (uiBuilder == null) return;
+            uiBuilder.HidePlans();
+
+            if (plansPausedDemo)
+            {
+                plansPausedDemo = false;
+                if (CurrentState == LicenseState.Demo && demoManager != null)
+                {
+                    Debug.Log("[VR Licensing] Plans closed — demo resumed.");
+                    SetState(LicenseState.Demo, forceUpdate: true);     // modal hidden, HUD back
+                    demoManager.StartDemo(config.demoDurationSeconds); // re-checks the limit
+                }
+                return;
+            }
+
+            if (CurrentState == LicenseState.Unlicensed) uiBuilder.ShowWelcome();
         }
 
         /// <summary>
