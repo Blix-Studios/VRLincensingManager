@@ -2406,8 +2406,9 @@ namespace VRLicensing
 
         private Camera ResolveHudCam()
         {
-            // Camera.main can change on scene load; re-fetch when the cached one dies.
-            if (hudCam == null) hudCam = Camera.main;
+            // Camera.main can change on scene load or when the rig is swapped; re-fetch when
+            // the cached one dies or stops rendering.
+            if (hudCam == null || !hudCam.isActiveAndEnabled) hudCam = Camera.main;
             return hudCam;
         }
 
@@ -2471,14 +2472,12 @@ namespace VRLicensing
             bool modalOpen = overlayPanel != null && overlayPanel.activeSelf;
             bool wantBackground = config != null && config.usePassthroughBackground;
             bool scanning = qrScanner != null && qrScanner.IsScanning;
-            // Any panel with a key field counts as "typing mode": the user is reading the
-            // key off their phone or PC screen, so show them the real room.
-            bool typing = (keyInputPanel != null && keyInputPanel.activeSelf)
-                       || (demoExpiredPanel != null && demoExpiredPanel.activeSelf)
-                       || (licenseExpiredPanel != null && licenseExpiredPanel.activeSelf);
             // Scan mode always shows the real room (that's how the user finds the QR);
-            // outside those, passthrough is the opt-in background.
-            bool want = cam != null && modalOpen && (wantBackground || scanning || typing);
+            // otherwise passthrough is only the opt-in background. Panels with a key field
+            // no longer force it (v1.12.0-pre.7): Enable() binds to the camera of that
+            // instant and re-layers the canvas, which hid the expired panel whenever the
+            // camera changed afterwards (Boot → Log In at startup, or in-session expiry).
+            bool want = cam != null && modalOpen && (wantBackground || scanning);
 
             // The XRI spatial keyboard spawns lazily OUTSIDE the rig hierarchy the first
             // time a field is focused, so it must be pulled onto the render layer while
@@ -2489,6 +2488,17 @@ namespace VRLicensing
                 if (kb != null) passthrough.BorrowLateHierarchy(kb);
             }
 
+            // The camera Enable() was bound to is gone or is no longer the main camera
+            // (scene load, rig swap): tear down cleanly — layers, culling and gravity go back
+            // to normal — and let the block below re-enable on the new camera if still wanted.
+            if (passthroughActive && (passthrough.Camera == null || passthrough.Camera != cam))
+            {
+                Debug.Log("[VR Licensing] Passthrough camera changed — re-binding.");
+                passthrough.Disable();
+                passthroughActive = false;
+                if (overlayImage != null) overlayImage.color = COLOR_BG_OVERLAY;
+            }
+
             if (want == passthroughActive) return;
 
             if (want)
@@ -2497,17 +2507,18 @@ namespace VRLicensing
                     canvas != null ? canvas.gameObject : null,
                     demoTimerCanvas != null ? demoTimerCanvas.gameObject : null,
                     FindKeyboardRoot());
+                // Never report passthrough as active unless Enable() really took the camera.
+                passthroughActive = passthrough.IsActive;
                 // Drop the dark backdrop: the room itself is the background now. The image
                 // stays enabled so it keeps blocking clicks on whatever is behind the modal.
-                if (overlayImage != null) overlayImage.color = new Color(0f, 0f, 0f, 0f);
+                if (passthroughActive && overlayImage != null) overlayImage.color = new Color(0f, 0f, 0f, 0f);
             }
             else
             {
                 passthrough.Disable();
+                passthroughActive = false;
                 if (overlayImage != null) overlayImage.color = COLOR_BG_OVERLAY;
             }
-
-            passthroughActive = want;
         }
 
         // ─────────────────── Gate Modality ───────────────────

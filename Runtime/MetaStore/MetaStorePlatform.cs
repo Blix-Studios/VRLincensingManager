@@ -11,6 +11,12 @@ using Oculus.Platform.Models;
 using UnityEngine;
 using UnityEngine.Scripting;
 
+// Nothing references this assembly (the runtime only sees it through StorePlatformRegistry),
+// so without this attribute UnityLinker drops the whole assembly from IL2CPP player builds and
+// Register() never runs: build 23 shipped with "Meta XR Platform SDK is not installed" and no
+// entitlement check. AlwaysLinkAssembly forces the linker to process it even when unreferenced.
+[assembly: AlwaysLinkAssembly]
+
 namespace VRLicensing.MetaStore
 {
     /// <summary>

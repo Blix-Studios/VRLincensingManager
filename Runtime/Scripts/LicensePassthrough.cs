@@ -46,6 +46,9 @@ namespace VRLicensing
 
         public bool IsActive { get; private set; }
 
+        /// <summary>The camera <see cref="Enable"/> bound to; null (Unity-null) once it is destroyed.</summary>
+        public Camera Camera => cam;
+
         private Camera cam;
         private CameraClearFlags prevClearFlags;
         private Color prevBackground;
