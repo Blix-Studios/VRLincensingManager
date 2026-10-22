@@ -3,6 +3,18 @@
 All notable changes to `com.blixstudios.vr-licensing`. Pre-release tags (`vX.Y.Z-pre.N`) are
 test builds for VirtualChainsaw; the final tag is cut only after QA on the headset.
 
+## 1.12.0-pre.6 — 2026-10-21
+
+- Demo expiry inside a session is now guaranteed: a watchdog in the license UI (its own
+  GameObject) ends the demo through the normal `OnDemoExpired` path when the countdown has sat
+  at zero for 2 s while the manager is still in `Demo` (`LicenseManager.ForceDemoExpiry` →
+  `DemoModeManager.ForceExpire`). Field report: a Quest 3 counted 16 min of a 15-min demo
+  without the expired panel; the in-session path works in the editor, so the device-side
+  cause is still being traced.
+- Development builds log demo diagnostics (`[VR Licensing] demo: …`): start, every 30 s,
+  pause/resume/focus, disable, forced expiry.
+- No contract change (RPCs, Edge Function, LicenseConfig fields unchanged).
+
 ## 1.12.0-pre.5 — 2026-10-19
 
 - "Best value" badge on the ANNUAL plan is now **data-driven**: shown only when the annual price
