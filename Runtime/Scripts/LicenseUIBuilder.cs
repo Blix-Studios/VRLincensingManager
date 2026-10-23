@@ -885,7 +885,8 @@ namespace VRLicensing
 
             // Single centred column (title, benefits, one button per term, status).
             plansStoreColumn = BuildStoreColumn(panelRt, 0f, "Plans");
-            plansStoreColumn.rt.anchoredPosition = new Vector2(0f, -10f);
+            // Raised so the two-line billing note clears the Back button at the bottom.
+            plansStoreColumn.rt.anchoredPosition = new Vector2(0f, 12f);
 
             plansHint = CreateTMPText("PlansHint", panelRt,
                 "", 13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
