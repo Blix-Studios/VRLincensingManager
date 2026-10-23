@@ -3,7 +3,7 @@
 All notable changes to `com.blixstudios.vr-licensing`. Pre-release tags (`vX.Y.Z-pre.N`) are
 test builds for VirtualChainsaw; the final tag is cut only after QA on the headset.
 
-## 1.12.0-pre.8 — unreleased (branch feature/v1.12-pre8-plans-in-demo)
+## 1.12.0-pre.8 — 2026-10-22
 
 - **Plans before and during the demo** (store builds only). The welcome panel gains a localized
   "Subscribe" button (11 languages) next to "Start Free Demo", and `LicenseManager.ShowPlans()`
