@@ -3,6 +3,24 @@
 All notable changes to `com.blixstudios.vr-licensing`. Pre-release tags (`vX.Y.Z-pre.N`) are
 test builds for VirtualChainsaw; the final tag is cut only after QA on the headset.
 
+## 1.12.0-pre.9 — 2026-10-23
+
+- **Purchase telemetry.** New store event `plans_opened`, queued once per opening of the plans
+  panel (`LicenseManager.ShowPlans`: welcome "Subscribe" button or the game's pause menu).
+  Server side: `report_device_session` must accept the name in its `p_events` allow-list
+  (migration) and the contract (`03-LICENSING-CONTRACT.md` §8) lists it with the others:
+  `plans_opened`, `checkout_opened`, `checkout_completed`, `checkout_cancelled`,
+  `subscription_verified`. Fields are unchanged: name, sku, term (empty for plans_opened), at.
+- `plans_opened` and every `checkout_*` event are reported **immediately** through
+  `report_device_session` instead of waiting for the next session report. Reports are serialised
+  (one in flight at a time) so the demo delta is never sent twice.
+- The event queue is **persisted** in PlayerPrefs (`vrl_store_events`, no personal data) and
+  flushed with the first report after start; a failed report puts its events back in the queue.
+- `StoreEventQueue` (new, plain C#) with edit-mode tests under `Tests/Editor`
+  (`VRLicensing.Tests`): JSON shape without user/device ids, persistence round trip, drain,
+  restore order, 50-event cap, escaping.
+- No contract change beyond the new event name (RPC signature and Edge Function unchanged).
+
 ## 1.12.0-pre.8 — 2026-10-22
 
 - **Plans before and during the demo** (store builds only). The welcome panel gains a localized

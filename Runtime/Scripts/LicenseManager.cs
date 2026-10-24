@@ -81,7 +81,11 @@ namespace VRLicensing
         private bool activatingStoreFromCache;
         private string storeUserId;                 // Meta user id once the server verified it (phase B)
         private StoreProductInfo storeProduct;          // per-session product cache (SKU + billing plans)
-        private readonly List<string> storeEvents = new List<string>(); // pending p_events (phase B)
+        private StoreEventQueue storeEvents;      // pending p_events, persisted (v1.12.0-pre.9)
+        private const string STORE_EVENTS_KEY = "vrl_store_events";
+        private bool reportInFlight;              // one report_device_session at a time (the demo delta must not be sent twice)
+        private bool flushAfterReport;            // an immediate event arrived while a report was in flight
+        private bool plansPanelOpen;              // plans_opened is queued once per opening
         private string pendingNotice;               // shown once on the next panel (e.g. offline notice)
         private bool entitlementBlocked;
 
@@ -227,6 +231,11 @@ namespace VRLicensing
 
             // Resolve the store platform (v1.12). Without the store SDK the build behaves as None.
             ResolveStoreProvider();
+            storeEvents = new StoreEventQueue(
+                () => PlayerPrefs.GetString(STORE_EVENTS_KEY, ""),
+                saved => { PlayerPrefs.SetString(STORE_EVENTS_KEY, saved); PlayerPrefs.Save(); });
+            if (storeEvents.Count > 0)
+                Debug.Log($"[VR Licensing] {storeEvents.Count} store event(s) pending from a previous session; they go out with the first report.");
 
             // Development builds only: the raw id the RPCs send and the privacy code derived from
             // it, so the server-side hash (over device_registry.device_unique_id) can be checked
@@ -621,6 +630,7 @@ namespace VRLicensing
             if (!string.IsNullOrEmpty(data.store_user_id)) storeUserId = data.store_user_id;
             demoManager.StopDemo();
             plansPausedDemo = false;
+            plansPanelOpen = false;
             SetState(LicenseState.SubscribedViaStore);
             sessionTracker.StartTracking();
             clockGuard.UpdateHighestKnownTime();
@@ -799,25 +809,32 @@ namespace VRLicensing
         }
 
         /// <summary>
-        /// Queues a checkout analytics event for the next report_device_session (p_events).
-        /// Data rules (spec §1.4): name, SKU, term and time only — never the Meta user id.
+        /// Queues a store analytics event (p_events). Data rules (spec §1.4): name, SKU, term and
+        /// time only — never the Meta user id. The queue is persisted (v1.12.0-pre.9), and
+        /// plans_opened / checkout_* are reported immediately instead of waiting for the next
+        /// session report.
         /// </summary>
         private void QueueStoreEvent(string name, string term)
         {
-            string at = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
-            storeEvents.Add("{\"name\":\"" + name + "\",\"sku\":\"" + (config.storeSubscriptionSku ?? "") +
-                            "\",\"term\":\"" + (term ?? "") + "\",\"at\":\"" + at + "\"}");
-            if (storeEvents.Count > 50) storeEvents.RemoveAt(0);
+            if (storeEvents == null) return;
+            storeEvents.Enqueue(name, config.storeSubscriptionSku, term, DateTime.UtcNow);
+            if (StoreEventQueue.IsImmediate(name)) FlushStoreEvents();
+        }
+
+        /// <summary>
+        /// Sends the pending events now through report_device_session (delta 0 unless demo time
+        /// is owed). Reports never overlap: a request while one is in flight waits for it, because
+        /// two concurrent reports would both carry the same demo delta.
+        /// </summary>
+        private void FlushStoreEvents()
+        {
+            if (storeEvents == null || storeEvents.Count == 0) return;
+            if (reportInFlight) { flushAfterReport = true; return; }
+            StartCoroutine(ReportDemoUsage(cachedLicense?.license_key));
         }
 
         /// <summary>Returns the pending events as a JSON array (and clears them), or null.</summary>
-        private string DrainStoreEvents()
-        {
-            if (storeEvents.Count == 0) return null;
-            string json = "[" + string.Join(",", storeEvents) + "]";
-            storeEvents.Clear();
-            return json;
-        }
+        private string DrainStoreEvents() => storeEvents?.Drain();
 
         #endregion
 
@@ -1153,6 +1170,11 @@ namespace VRLicensing
                 Debug.Log("[VR Licensing] Plans opened during the demo — demo paused.");
             }
             uiBuilder.ShowPlans(fromDemo);
+            if (!plansPanelOpen)
+            {
+                plansPanelOpen = true;
+                QueueStoreEvent(StoreEventQueue.PlansOpened, null);
+            }
         }
 
         /// <summary>
@@ -1161,6 +1183,7 @@ namespace VRLicensing
         /// </summary>
         public void ClosePlans()
         {
+            plansPanelOpen = false;
             if (uiBuilder == null) return;
             uiBuilder.HidePlans();
 
@@ -1380,8 +1403,13 @@ namespace VRLicensing
         /// </summary>
         private IEnumerator ReportDemoUsage(string lastLicenseKey)
         {
+            // Serialise reports: a second caller (an immediate store event) waits for this one.
+            while (reportInFlight) yield return null;
+            reportInFlight = true;
+
             float localDemo = SecureLicenseStorage.GetDemoUsedSeconds();
             float delta = Mathf.Max(0f, localDemo - serverReportedDemo);
+            string events = DrainStoreEvents();
 
             yield return supabaseClient.ReportDeviceSession(
                 config.productId, delta, lastLicenseKey,
@@ -1396,9 +1424,20 @@ namespace VRLicensing
                             SecureLicenseStorage.SetDemoUsedSeconds(status.demo_used_seconds);
                     }
                 },
-                (error) => { Debug.LogWarning($"[VR Licensing] Session report failed: {error}"); },
-                DrainStoreEvents()
+                (error) =>
+                {
+                    Debug.LogWarning($"[VR Licensing] Session report failed: {error}");
+                    storeEvents?.Restore(events); // keep the events for the next report (persisted)
+                },
+                events
             );
+
+            reportInFlight = false;
+            if (flushAfterReport)
+            {
+                flushAfterReport = false;
+                FlushStoreEvents();
+            }
         }
     }
 }
