@@ -95,7 +95,8 @@ Spec: `06-LICENSING-V1.12-SPEC.md` (VRInstructorRef). Everything below is additi
 | `LicenseState.SubscribedViaStore` | Equivalent to `Licensed` for gating; no client branding. Cached encrypted until `min(expiresAt + 3 days grace, verifiedAt + maxOfflineHours)`. |
 | Device code | `Device code: XXXXX-XXXXX` at the foot of every license panel, in 11 languages: first 10 hex chars (uppercase) of SHA-256 over the UTF-8 bytes of `SystemInfo.deviceUniqueIdentifier` — the exact string sent as `p_device_id`. |
 | Branding / telemetry | Now through `get_license_branding` / `report_telemetry` RPCs; falls back to the pre-1.12 direct table access while they return 404 (not deployed). |
-| Store events (`p_events`) | `plans_opened` (once per opening of the plans panel), `checkout_opened`, `checkout_completed`, `checkout_cancelled`, `subscription_verified` — name, SKU, term and UTC time only. Persisted in PlayerPrefs until reported; `plans_opened` and `checkout_*` are sent at once, the rest with the next session report. |
+| Intro offers | If a billing plan carries an `INTRO_OFFER`, its button shows the store's localized intro price and, smaller, the duration and the regular price ("for the first 3 months, then US$39.99", 11 languages). Only the duration words are ours; no offer, no change. |
+| Store events (`p_events`) | `plans_opened` (once per opening of a panel with plans: demo-expired, license-expired, plans panel), `checkout_opened`, `checkout_completed`, `checkout_cancelled`, `subscription_verified` — name, SKU, term and UTC time only. Persisted in PlayerPrefs until reported; `plans_opened` and `checkout_*` are sent at once, the rest with the next session report. |
 | Server verification | Always on: `verify-store-entitlement` Edge Function (Meta user id + `Users.GetUserProof` nonce), `p_store_user_id` on `get_device_status`, `p_events` on `report_device_session` (events carry name, SKU, term and time — never the Meta user id). While the function is not deployed the call fails and the app stays locked with the "internet needed" notice; use the editor stub to test. |
 
 ### Plans before / during the demo (v1.12.0-pre.8)
@@ -116,6 +117,31 @@ Label it with `VRLicensing.LicenseStrings.Subscribe()` (11 languages). `ShowPlan
 in any state other than `Unlicensed` / `Demo` and without a store platform, so the wiring is
 safe in company APKs too. VirtualChainsaw does this with `PauseMenuSubscribeButton`, a small
 component on the pause-menu panel that clones one of the existing buttons at runtime.
+
+### Feedback and demo exit survey (v1.12.0-pre.9)
+
+Every simulator (store build or not) can let the user send feedback from its own UI:
+
+```csharp
+var manager = FindFirstObjectByType<VRLicensing.LicenseManager>();
+// label: VRLicensing.LicenseStrings.Feedback()  → "Send feedback" in the UI language
+manager.ShowFeedback();   // rating 1-5 (optional), category, optional text, thank-you; "Back" closes
+```
+
+The panel pauses the demo stopwatch while open and sends `submit_app_feedback` (contract §9):
+device id, product, rating, category (`bug` / `performance` / `content` / `suggestion`), text
+(max 500), `p_app_version` (`Application.version`, or `LicenseManager.AppVersion` if the host
+sets it) and `p_locale` (the language the license UI shows). Never a user id or e-mail.
+VirtualChainsaw wires it with `PauseMenuFeedbackButton` next to `PauseMenuSubscribeButton`.
+
+The **demo-expired panel** first asks "What stopped you?" (`price`, `for_my_company`,
+`not_what_i_expected`, `other`, optional text, skippable) once per headset and product; the
+answer time is stored and the question only returns after an admin demo reset
+(`demo_reset_at` newer than the answer). "It's for my company" leads to the license-key column
+with a line about company quotes — no URL, QR or price in store builds.
+
+To keep the license UI in the language your app shows, set `LicenseStrings.LanguageOverride`
+to the selected locale code whenever it changes (VirtualChainsaw: `LicenseLanguageSync`).
 
 Unknown license statuses (e.g. `revoked`) deserialize without error and are treated as "not valid" with the server's message; an online re-validation that returns any verdict other than a connection error drops the cached license immediately.
 

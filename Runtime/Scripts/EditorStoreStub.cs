@@ -56,8 +56,10 @@ namespace VRLicensing
             if (!Enabled)
             {
                 StoreVerification.StubVerifier = null;
+                AppFeedback.StubSubmitter = null;
                 return;
             }
+            AppFeedback.StubSubmitter = StubFeedback;
             // Priority 100 beats the real SDK provider when both are present.
             StorePlatformRegistry.Register(StorePlatform.MetaHorizon, () => new EditorStoreStub(), 100, "EDITOR STUB");
             StoreVerification.StubVerifier = VerifyStub;
@@ -121,13 +123,67 @@ namespace VRLicensing
             Debug.Log($"[VR Licensing] Stub annual price: {AnnualCents / 100m:0.00}");
         }
 
+        // v1.12.0-pre.9: optional intro offer on ANNUAL (first year at 299.99) to exercise the
+        // two-line plan button; OFF by default so the plain layout stays the one tested most.
+        private const string PREF_INTRO_OFFER = "VRLicensing.StoreStub.IntroOffer";
+        public static bool IntroOffer
+        {
+            get => EditorPrefs.GetBool(PREF_INTRO_OFFER, false);
+            set => EditorPrefs.SetBool(PREF_INTRO_OFFER, value);
+        }
+
+        [MenuItem("Tools/Blix Studios/Licensing/Store stub: intro offer on ANNUAL (toggle)")]
+        private static void ToggleIntroOffer()
+        {
+            IntroOffer = !IntroOffer;
+            Debug.Log($"[VR Licensing] Stub intro offer on ANNUAL: {IntroOffer}");
+        }
+
+        // Feedback / exit survey (pre.9): answered locally so Play mode never writes real rows.
+        private const string PREF_FEEDBACK_FAIL = "VRLicensing.StoreStub.FeedbackFails";
+        public static bool FeedbackFails
+        {
+            get => EditorPrefs.GetBool(PREF_FEEDBACK_FAIL, false);
+            set => EditorPrefs.SetBool(PREF_FEEDBACK_FAIL, value);
+        }
+
+        [MenuItem("Tools/Blix Studios/Licensing/Store stub: feedback answers rate_limited (toggle)")]
+        private static void ToggleFeedbackFails()
+        {
+            FeedbackFails = !FeedbackFails;
+            Debug.Log($"[VR Licensing] Stub feedback fails: {FeedbackFails}");
+        }
+
+        [MenuItem("Tools/Blix Studios/Licensing/Clear exit-survey answer (ask again)")]
+        private static void ClearExitSurvey()
+        {
+            LicenseManager.ClearExitSurveyAnswer();
+            Debug.Log("[VR Licensing] Exit-survey answer cleared; the demo-expired panel asks again.");
+        }
+
+        private static AppFeedback.Result StubFeedback(string kind)
+        {
+            Debug.Log($"[VR Licensing] STUB submit_app_feedback({kind}) -> {(FeedbackFails ? "rate_limited" : "ok")}");
+            return FeedbackFails
+                ? AppFeedback.Result.Failure(AppFeedback.ErrorRateLimited)
+                : AppFeedback.Result.Success(Guid.NewGuid().ToString());
+        }
+
         private static List<StoreTermPrice> FakePrices()
         {
+            var annual = Fake("ANNUAL", AnnualCents);
+            if (IntroOffer)
+            {
+                annual.introFormattedPrice = "US$299.99 (stub)";
+                annual.introAmountInHundredths = 29999;
+                annual.introTerm = "ANNUAL";
+                annual.introTermCount = 1;
+            }
             return new List<StoreTermPrice>
             {
                 Fake("MONTHLY", 3999),
                 Fake("SEMIANNUAL", 19999),
-                Fake("ANNUAL", AnnualCents),
+                annual,
             };
         }
 

@@ -339,14 +339,35 @@ namespace VRLicensing.MetaStore
                 {
                     if (plan == null || plan.PaidOffer == null) continue;
                     var paid = plan.PaidOffer;
-                    info.terms.Add(new StoreTermPrice
+                    var price = new StoreTermPrice
                     {
                         term = paid.SubscriptionTerm.ToString().ToUpperInvariant(),
                         formattedPrice = paid.Price != null ? paid.Price.Formatted : null,
                         amountInHundredths = paid.Price != null ? paid.Price.AmountInHundredths : 0u,
                         currency = paid.Price != null ? paid.Price.Currency : null,
-                        hasTrial = plan.TrialOffersOptional != null && plan.TrialOffersOptional.Count > 0
-                    });
+                    };
+
+                    // v1.12.0-pre.9: the TrialOffer list may hold a FREE_TRIAL and/or an
+                    // INTRO_OFFER. The intro offer is shown on the plan button with the store's
+                    // own localized price and its duration (MaxTermCount x TrialTerm); nothing
+                    // changes when there is none (spec 08 section 4.5).
+                    if (plan.TrialOffersOptional != null)
+                    {
+                        foreach (TrialOffer trial in plan.TrialOffersOptional)
+                        {
+                            if (trial == null) continue;
+                            if (trial.TrialType == OfferType.FreeTrial) price.hasTrial = true;
+                            else if (trial.TrialType == OfferType.IntroOffer && trial.Price != null &&
+                                     !string.IsNullOrEmpty(trial.Price.Formatted) && trial.MaxTermCount > 0)
+                            {
+                                price.introFormattedPrice = trial.Price.Formatted;
+                                price.introAmountInHundredths = trial.Price.AmountInHundredths;
+                                price.introTerm = trial.TrialTerm.ToString().ToUpperInvariant();
+                                price.introTermCount = trial.MaxTermCount;
+                            }
+                        }
+                    }
+                    info.terms.Add(price);
                 }
             }
 

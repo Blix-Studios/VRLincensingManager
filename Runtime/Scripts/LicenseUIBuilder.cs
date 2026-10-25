@@ -84,6 +84,31 @@ namespace VRLicensing
         private RectTransform licExpKeyColumn;
         private StoreColumn licStoreColumn;
         private GameObject welcomeBtnContainer;
+
+        // v1.12.0-pre.9 — demo exit survey (demo-expired panel) and the feedback panel
+        private GameObject expBody;                 // columns + divider of the demo-expired panel
+        private GameObject expSurvey;               // one-question survey shown first, once per headset
+        private TextMeshProUGUI expSurveyQuestion;
+        private TextMeshProUGUI expSurveyStatus;
+        private readonly System.Collections.Generic.List<Button> expSurveyOptions = new System.Collections.Generic.List<Button>();
+        private TMP_InputField expSurveyText;
+        private Button expSurveySend;
+        private Button expSurveySkip;
+        private string expSurveySelected;
+        private Coroutine expSurveyFinish;
+
+        private GameObject feedbackPanel;
+        private TextMeshProUGUI fbTitle;
+        private TextMeshProUGUI fbRatingHint;
+        private readonly System.Collections.Generic.List<Button> fbStars = new System.Collections.Generic.List<Button>();
+        private readonly System.Collections.Generic.List<Button> fbCategories = new System.Collections.Generic.List<Button>();
+        private TMP_InputField fbText;
+        private Button fbSend;
+        private Button fbBack;
+        private TextMeshProUGUI fbStatus;
+        private int fbRating;
+        private string fbCategory;
+        private Coroutine fbAutoClose;
         private readonly System.Collections.Generic.List<TextMeshProUGUI> deviceCodeLabels =
             new System.Collections.Generic.List<TextMeshProUGUI>();
         private const float COLUMN_X = 225f;    // horizontal offset of each column from the panel centre
@@ -112,6 +137,7 @@ namespace VRLicensing
             public GameObject badgeRoot;  // the pill; shown only when ANNUAL is strictly the best value
             public float labelRightDefault; // label offsetMax.x without the pill
             public string price;          // store-localized, set after the product is fetched
+            public StoreTermPrice plan;   // the store's billing plan (intro offer, if any) — v1.12.0-pre.9
         }
 
         // Success Panel
@@ -196,6 +222,7 @@ namespace VRLicensing
         {
             EnsurePositioned();
             overlayPanel.SetActive(true);
+            if (feedbackPanel != null) feedbackPanel.SetActive(false);
             if (plansPanel != null) plansPanel.SetActive(false);
             welcomePanel.SetActive(true);
             keyInputPanel.SetActive(false);
@@ -228,6 +255,7 @@ namespace VRLicensing
         {
             EnsurePositioned();
             overlayPanel.SetActive(true);
+            if (feedbackPanel != null) feedbackPanel.SetActive(false);
             if (plansPanel != null) plansPanel.SetActive(false);
             welcomePanel.SetActive(false);
             keyInputPanel.SetActive(true);
@@ -248,6 +276,7 @@ namespace VRLicensing
         {
             EnsurePositioned();
             overlayPanel.SetActive(true);
+            if (feedbackPanel != null) feedbackPanel.SetActive(false);
             if (plansPanel != null) plansPanel.SetActive(false);
             welcomePanel.SetActive(false);
             keyInputPanel.SetActive(false);
@@ -257,9 +286,25 @@ namespace VRLicensing
             expiredStatusText.text = "";
             expiredStatusText.color = COLOR_TEXT_DIM;
             ClearKeyField(expiredKeyField);
-            ApplyPromo(); // server promo may have arrived after the panel was built
             RefreshDeviceCodes();
-            if (demoStoreColumn != null) StartPopulate(demoStoreColumn, expDivider, expKeyColumn);
+
+            // v1.12.0-pre.9: one-question exit survey before the columns, once per headset and
+            // product (asked again only after an admin demo reset — LicenseManager decides).
+            if (expSurvey != null && manager != null && manager.ShouldAskExitSurvey()) ShowExitSurvey();
+            else ShowExpiredBody();
+        }
+
+        /// <summary>The two columns of the demo-expired panel (plans + key); counts as "plans shown" in store builds.</summary>
+        private void ShowExpiredBody()
+        {
+            if (expSurvey != null) expSurvey.SetActive(false);
+            if (expBody != null) expBody.SetActive(true);
+            ApplyPromo(); // server promo may have arrived after the panel was built
+            if (demoStoreColumn != null)
+            {
+                StartPopulate(demoStoreColumn, expDivider, expKeyColumn);
+                if (manager != null) manager.NotifyPlansShown();
+            }
         }
 
         /// <summary>
@@ -271,6 +316,7 @@ namespace VRLicensing
         {
             EnsurePositioned();
             overlayPanel.SetActive(true);
+            if (feedbackPanel != null) feedbackPanel.SetActive(false);
             if (plansPanel != null) plansPanel.SetActive(false);
             welcomePanel.SetActive(false);
             keyInputPanel.SetActive(false);
@@ -282,7 +328,11 @@ namespace VRLicensing
             ClearKeyField(licExpiredKeyField);
             if (licExpMsgText != null) licExpMsgText.text = LicenseExpiredMessage(storeExpiry, reason);
             RefreshDeviceCodes();
-            if (licStoreColumn != null) StartPopulate(licStoreColumn, licExpDivider, licExpKeyColumn);
+            if (licStoreColumn != null)
+            {
+                StartPopulate(licStoreColumn, licExpDivider, licExpKeyColumn);
+                if (manager != null) manager.NotifyPlansShown();
+            }
         }
 
         private string LicenseExpiredMessage(bool storeExpiry, string reason)
@@ -457,6 +507,7 @@ namespace VRLicensing
             BuildDemoExpiredPanel();
             BuildLicenseExpiredPanel();
             BuildPlansPanel();
+            BuildFeedbackPanel();
             BuildSuccessPanel();
             BuildDemoTimer();
 
@@ -801,23 +852,28 @@ namespace VRLicensing
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
                 size: new Vector2(820, 30), pos: new Vector2(0, -74));
 
+            // Everything below the message lives in a body container so the exit survey
+            // (v1.12.0-pre.9) can take its place for one question before the columns show.
+            expBody = CreatePanel("ExpBody", panelRt, Color.clear, stretch: true);
+            var bodyRt = expBody.GetComponent<RectTransform>();
+
             // Vertical divider between the two columns
-            expDivider = CreateDivider("ExpDivider", panelRt);
+            expDivider = CreateDivider("ExpDivider", bodyRt);
 
             // ── Left column: how to get access ──
             // Store build: Meta subscription plans (no URL, QR, external price or promo —
             // App Policies 1.1). Direct APK: the web purchase CTA, or the neutral hint.
             if (storeOffersEnabled)
-                demoStoreColumn = BuildStoreColumn(panelRt, -COLUMN_X, "ExpStore");
+                demoStoreColumn = BuildStoreColumn(bodyRt, -COLUMN_X, "ExpStore");
             else if (config.showPurchaseCta)
-                BuildPurchaseCta(panelRt, columnX: -COLUMN_X);
+                BuildPurchaseCta(bodyRt, columnX: -COLUMN_X);
             else
-                BuildOrganisationKeyHint(panelRt, columnX: -COLUMN_X);
+                BuildOrganisationKeyHint(bodyRt, columnX: -COLUMN_X);
 
             // ── Right column: redeem an existing key ──
             // Built inside its own container so it can slide to the centre when the store
             // column has nothing to offer (no SKUs yet, store unavailable…).
-            expKeyColumn = CreateColumn("ExpKeyColumn", panelRt, COLUMN_X);
+            expKeyColumn = CreateColumn("ExpKeyColumn", bodyRt, COLUMN_X);
 
             CreateTMPText("ExpRedeemTitle", expKeyColumn,
                 "Already have a license key?",
@@ -843,8 +899,380 @@ namespace VRLicensing
                 size: new Vector2(410, 40), pos: new Vector2(0, -145));
 
             CreateDeviceCodeFooter(panelRt);
+            BuildExitSurvey(panelRt);
 
             demoExpiredPanel.SetActive(false);
+        }
+
+        // ─────────────── DEMO EXIT SURVEY (v1.12.0-pre.9) ───────────────
+        // Spec 08 §5: "What stopped you?" — price / for my company / not what I expected / other,
+        // optional text through the system keyboard, skippable. Shown once per headset and
+        // product; the manager re-asks only after an admin demo reset. "It's for my company"
+        // leads to the key column with a line about company quotes — no URL, QR or price
+        // (store builds never point outside Meta).
+
+        private void BuildExitSurvey(RectTransform panelRt)
+        {
+            expSurvey = CreatePanel("ExpSurvey", panelRt, Color.clear, stretch: true);
+            var rt = expSurvey.GetComponent<RectTransform>();
+
+            expSurveyQuestion = CreateTMPText("ExpSurveyQuestion", rt, "",
+                17, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
+                size: new Vector2(820, 30), pos: new Vector2(0, 92));
+
+            expSurveyOptions.Clear();
+            Vector2[] slots = { new Vector2(-180, 46), new Vector2(180, 46), new Vector2(-180, -2), new Vector2(180, -2) };
+            for (int i = 0; i < AppFeedback.ExitReasons.Length && i < slots.Length; i++)
+            {
+                string code = AppFeedback.ExitReasons[i];
+                var btn = CreatePositionedButton("ExpSurvey_" + code, rt, code, new Vector2(340, 40), slots[i],
+                    COLOR_SECONDARY, COLOR_SECONDARY_HOVER, () => OnExitSurveyOption(code));
+                FitLabel(btn);
+                expSurveyOptions.Add(btn);
+            }
+
+            expSurveyText = CreateKeyInputField("ExpSurveyText", rt, 700f,
+                charLimit: AppFeedback.MaxTextLength, placeholderText: "", allowDashes: true, freeText: true);
+            var textRt = expSurveyText.GetComponent<RectTransform>();
+            textRt.anchorMin = textRt.anchorMax = new Vector2(0.5f, 0.5f);
+            textRt.anchoredPosition = new Vector2(0, -58);
+
+            expSurveySend = CreatePositionedButton("ExpSurveySend", rt, "", new Vector2(200, 40), new Vector2(-112, -116),
+                COLOR_ACCENT, COLOR_ACCENT_HOVER, OnExitSurveySend);
+            expSurveySkip = CreatePositionedButton("ExpSurveySkip", rt, "", new Vector2(200, 40), new Vector2(112, -116),
+                COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnExitSurveySkip);
+
+            expSurveyStatus = CreateTMPText("ExpSurveyStatus", rt, "",
+                13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
+                size: new Vector2(820, 26), pos: new Vector2(0, -152));
+
+            expSurvey.SetActive(false);
+        }
+
+        private void ShowExitSurvey()
+        {
+            if (expBody != null) expBody.SetActive(false);
+            if (expSurveyFinish != null) { StopCoroutine(expSurveyFinish); expSurveyFinish = null; }
+            expSurveySelected = null;
+            expSurveyText.text = "";
+            expSurveyStatus.text = "";
+            expSurveyStatus.color = COLOR_TEXT_DIM;
+
+            string lang = LicenseStrings.CurrentLanguage;
+            SetLocalized(expSurveyQuestion, LicenseStrings.ExitQuestion(lang), LicenseStrings.ExitQuestion("en"));
+            for (int i = 0; i < expSurveyOptions.Count; i++)
+            {
+                string code = AppFeedback.ExitReasons[i];
+                var label = expSurveyOptions[i].GetComponentInChildren<TextMeshProUGUI>();
+                SetLocalized(label, LicenseStrings.ExitReasonLabel(code, lang), LicenseStrings.ExitReasonLabel(code, "en"));
+                SetSelected(expSurveyOptions[i], false);
+                expSurveyOptions[i].interactable = true;
+            }
+            SetPlaceholder(expSurveyText, LicenseStrings.TextPlaceholder(lang), LicenseStrings.TextPlaceholder("en"));
+            SetLocalized(expSurveySend.GetComponentInChildren<TextMeshProUGUI>(), LicenseStrings.Send(lang), LicenseStrings.Send("en"));
+            SetLocalized(expSurveySkip.GetComponentInChildren<TextMeshProUGUI>(), LicenseStrings.Skip(lang), LicenseStrings.Skip("en"));
+            expSurveySend.interactable = false; // until an option is chosen
+            expSurveySkip.interactable = true;
+            expSurveyText.interactable = true;
+
+            expSurvey.SetActive(true);
+        }
+
+        private void OnExitSurveyOption(string code)
+        {
+            expSurveySelected = code;
+            for (int i = 0; i < expSurveyOptions.Count; i++)
+                SetSelected(expSurveyOptions[i], AppFeedback.ExitReasons[i] == code);
+            expSurveySend.interactable = true;
+        }
+
+        private void OnExitSurveySkip()
+        {
+            if (manager != null) manager.SkipExitSurvey();
+            ShowExpiredBody();
+        }
+
+        private void OnExitSurveySend()
+        {
+            if (string.IsNullOrEmpty(expSurveySelected) || manager == null) return;
+            string code = expSurveySelected;
+            foreach (var b in expSurveyOptions) b.interactable = false;
+            expSurveySend.interactable = false;
+            expSurveySkip.interactable = false;
+            expSurveyText.interactable = false;
+            expSurveyStatus.text = "…";
+            expSurveyStatus.color = COLOR_TEXT_DIM;
+
+            manager.SubmitExitSurvey(code, expSurveyText.text, result =>
+            {
+                if (expSurvey == null || !expSurvey.activeSelf) return;
+                // Once answered (or refused as a duplicate) the question is over; a transport
+                // failure is told briefly and the panel moves on — it is asked only once.
+                bool accepted = result != null && (result.ok || result.error == AppFeedback.ErrorRateLimited);
+                string lang = LicenseStrings.CurrentLanguage;
+                expSurveyStatus.text = accepted
+                    ? Localized(expSurveyStatus, LicenseStrings.ExitThanks(lang), LicenseStrings.ExitThanks("en"))
+                    : Localized(expSurveyStatus, LicenseStrings.SendFailed(lang), LicenseStrings.SendFailed("en"));
+                expSurveyStatus.color = accepted ? COLOR_SUCCESS : COLOR_ERROR;
+                expSurveyFinish = StartCoroutine(FinishExitSurvey(code, 1.6f));
+            });
+        }
+
+        private IEnumerator FinishExitSurvey(string code, float delay)
+        {
+            yield return new WaitForSecondsRealtime(delay);
+            expSurveyFinish = null;
+            if (demoExpiredPanel == null || !demoExpiredPanel.activeSelf) yield break;
+            ShowExpiredBody();
+            if (code == AppFeedback.ReasonForMyCompany && expiredStatusText != null)
+            {
+                string lang = LicenseStrings.CurrentLanguage;
+                expiredStatusText.text = Localized(expiredStatusText, LicenseStrings.CompanyHint(lang), LicenseStrings.CompanyHint("en"));
+                expiredStatusText.color = COLOR_TEXT;
+            }
+        }
+
+        // ─────────────── FEEDBACK PANEL (v1.12.0-pre.9) ───────────────
+        // Spec 08 §5: rating 1-5 (optional), category (required), optional text (system
+        // keyboard, 500 chars), thank-you message. Opened from the game through
+        // LicenseManager.ShowFeedback() (e.g. the pause menu); every simulator, store or not.
+
+        private void BuildFeedbackPanel()
+        {
+            var overlayRt = overlayPanel.GetComponent<RectTransform>();
+
+            feedbackPanel = CreatePanel("FeedbackPanel", overlayRt, COLOR_PANEL_BG);
+            var panelRt = feedbackPanel.GetComponent<RectTransform>();
+            panelRt.anchorMin = new Vector2(0.5f, 0.5f);
+            panelRt.anchorMax = new Vector2(0.5f, 0.5f);
+            panelRt.sizeDelta = new Vector2(660, 470);
+            panelRt.anchoredPosition = Vector2.zero;
+
+            var header = CreatePanel("FbHeader", panelRt, COLOR_PANEL_HEADER);
+            var headerRt = header.GetComponent<RectTransform>();
+            headerRt.anchorMin = new Vector2(0f, 1f);
+            headerRt.anchorMax = new Vector2(1f, 1f);
+            headerRt.pivot = new Vector2(0.5f, 1f);
+            headerRt.sizeDelta = new Vector2(0, 60);
+            headerRt.anchoredPosition = Vector2.zero;
+
+            fbTitle = CreateTMPText("FbTitle", headerRt, "",
+                20, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
+                stretch: true, padding: new Vector4(20, 20, 0, 0));
+
+            fbRatingHint = CreateTMPText("FbRatingHint", panelRt, "",
+                13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
+                size: new Vector2(600, 24), pos: new Vector2(0, 142));
+
+            fbStars.Clear();
+            for (int i = 1; i <= 5; i++)
+            {
+                int value = i;
+                var star = CreatePositionedButton("FbStar" + i, panelRt, i.ToString(), new Vector2(48, 48),
+                    new Vector2(-124 + (i - 1) * 62, 100), COLOR_SECONDARY, COLOR_SECONDARY_HOVER, () => OnFeedbackRating(value));
+                var label = star.GetComponentInChildren<TextMeshProUGUI>();
+                label.fontSize = 20;
+                fbStars.Add(star);
+            }
+
+            fbCategories.Clear();
+            for (int i = 0; i < AppFeedback.Categories.Length; i++)
+            {
+                string code = AppFeedback.Categories[i];
+                var btn = CreatePositionedButton("FbCat_" + code, panelRt, code, new Vector2(146, 40),
+                    new Vector2(-231 + i * 154, 46), COLOR_SECONDARY, COLOR_SECONDARY_HOVER, () => OnFeedbackCategory(code));
+                FitLabel(btn);
+                fbCategories.Add(btn);
+            }
+
+            fbText = CreateKeyInputField("FbText", panelRt, 600f,
+                charLimit: AppFeedback.MaxTextLength, placeholderText: "", allowDashes: true, freeText: true);
+            var textRt = fbText.GetComponent<RectTransform>();
+            textRt.anchorMin = textRt.anchorMax = new Vector2(0.5f, 0.5f);
+            textRt.anchoredPosition = new Vector2(0, -12);
+
+            fbStatus = CreateTMPText("FbStatus", panelRt, "",
+                13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
+                anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
+                size: new Vector2(600, 40), pos: new Vector2(0, -60));
+
+            fbSend = CreatePositionedButton("FbSend", panelRt, "", new Vector2(200, 40), new Vector2(-112, -120),
+                COLOR_ACCENT, COLOR_ACCENT_HOVER, OnFeedbackSend);
+            fbBack = CreatePositionedButton("FbBack", panelRt, "", new Vector2(200, 40), new Vector2(112, -120),
+                COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnFeedbackBack);
+
+            CreateDeviceCodeFooter(panelRt);
+
+            feedbackPanel.SetActive(false);
+        }
+
+        /// <summary>Shows the feedback panel on its own. <paramref name="fromDemo"/> hides the demo HUD.</summary>
+        public void ShowFeedback(bool fromDemo)
+        {
+            if (feedbackPanel == null) return;
+            EnsurePositioned();
+            overlayPanel.SetActive(true);
+            welcomePanel.SetActive(false);
+            keyInputPanel.SetActive(false);
+            demoExpiredPanel.SetActive(false);
+            licenseExpiredPanel.SetActive(false);
+            successPanel.SetActive(false);
+            if (plansPanel != null) plansPanel.SetActive(false);
+            feedbackPanel.SetActive(true);
+            if (fromDemo) HideDemoTimer();
+
+            if (fbAutoClose != null) { StopCoroutine(fbAutoClose); fbAutoClose = null; }
+            fbRating = 0;
+            fbCategory = null;
+            fbText.text = "";
+            fbText.interactable = true;
+            fbStatus.text = "";
+            fbStatus.color = COLOR_TEXT_DIM;
+
+            string lang = LicenseStrings.CurrentLanguage;
+            SetLocalized(fbTitle, LicenseStrings.Feedback(lang), LicenseStrings.Feedback("en"));
+            SetLocalized(fbRatingHint, LicenseStrings.RatingHint(lang), LicenseStrings.RatingHint("en"));
+            for (int i = 0; i < fbCategories.Count; i++)
+            {
+                string code = AppFeedback.Categories[i];
+                var label = fbCategories[i].GetComponentInChildren<TextMeshProUGUI>();
+                SetLocalized(label, LicenseStrings.CategoryLabel(code, lang), LicenseStrings.CategoryLabel(code, "en"));
+                SetSelected(fbCategories[i], false);
+                fbCategories[i].interactable = true;
+            }
+            foreach (var star in fbStars) { SetSelected(star, false); star.interactable = true; }
+            SetPlaceholder(fbText, LicenseStrings.TextPlaceholder(lang), LicenseStrings.TextPlaceholder("en"));
+            SetLocalized(fbSend.GetComponentInChildren<TextMeshProUGUI>(), LicenseStrings.Send(lang), LicenseStrings.Send("en"));
+            SetLocalized(fbBack.GetComponentInChildren<TextMeshProUGUI>(), LicenseStrings.Back(lang), LicenseStrings.Back("en"));
+            fbSend.interactable = true;
+            fbBack.interactable = true;
+            RefreshDeviceCodes();
+        }
+
+        /// <summary>Hides the feedback panel; the manager decides what to show next.</summary>
+        public void HideFeedback()
+        {
+            if (feedbackPanel == null) return;
+            if (fbAutoClose != null) { StopCoroutine(fbAutoClose); fbAutoClose = null; }
+            feedbackPanel.SetActive(false);
+        }
+
+        private void OnFeedbackRating(int value)
+        {
+            fbRating = fbRating == value ? 0 : value; // tapping the same star clears the rating (optional)
+            for (int i = 0; i < fbStars.Count; i++) SetSelected(fbStars[i], i + 1 <= fbRating);
+        }
+
+        private void OnFeedbackCategory(string code)
+        {
+            fbCategory = code;
+            for (int i = 0; i < fbCategories.Count; i++) SetSelected(fbCategories[i], AppFeedback.Categories[i] == code);
+            if (fbStatus.color != COLOR_SUCCESS) fbStatus.text = "";
+        }
+
+        private void OnFeedbackBack()
+        {
+            if (manager != null) manager.CloseFeedback();
+            else HideFeedback();
+        }
+
+        private void OnFeedbackSend()
+        {
+            if (manager == null) return;
+            string lang = LicenseStrings.CurrentLanguage;
+            if (string.IsNullOrEmpty(fbCategory))
+            {
+                fbStatus.text = Localized(fbStatus, LicenseStrings.ChooseCategory(lang), LicenseStrings.ChooseCategory("en"));
+                fbStatus.color = new Color(1f, 0.75f, 0.3f, 1f);
+                return;
+            }
+
+            fbSend.interactable = false;
+            fbText.interactable = false;
+            foreach (var b in fbCategories) b.interactable = false;
+            foreach (var b in fbStars) b.interactable = false;
+            fbStatus.text = "…";
+            fbStatus.color = COLOR_TEXT_DIM;
+
+            manager.SubmitFeedback(fbRating, fbCategory, fbText.text, result =>
+            {
+                if (feedbackPanel == null || !feedbackPanel.activeSelf) return;
+                string l = LicenseStrings.CurrentLanguage;
+                if (result != null && result.ok)
+                {
+                    fbStatus.text = Localized(fbStatus, LicenseStrings.Thanks(l), LicenseStrings.Thanks("en"));
+                    fbStatus.color = COLOR_SUCCESS;
+                    fbAutoClose = StartCoroutine(AutoCloseFeedback(2.5f));
+                }
+                else if (result != null && result.error == AppFeedback.ErrorRateLimited)
+                {
+                    fbStatus.text = Localized(fbStatus, LicenseStrings.RateLimited(l), LicenseStrings.RateLimited("en"));
+                    fbStatus.color = new Color(1f, 0.75f, 0.3f, 1f);
+                    fbAutoClose = StartCoroutine(AutoCloseFeedback(3f));
+                }
+                else
+                {
+                    fbStatus.text = Localized(fbStatus, LicenseStrings.SendFailed(l), LicenseStrings.SendFailed("en"));
+                    fbStatus.color = COLOR_ERROR;
+                    fbSend.interactable = true;
+                    fbText.interactable = true;
+                    foreach (var b in fbCategories) b.interactable = true;
+                    foreach (var b in fbStars) b.interactable = true;
+                }
+            });
+        }
+
+        private IEnumerator AutoCloseFeedback(float delay)
+        {
+            yield return new WaitForSecondsRealtime(delay);
+            fbAutoClose = null;
+            if (manager != null) manager.CloseFeedback();
+            else HideFeedback();
+        }
+
+        // ── small helpers shared by the survey and the feedback panel ──
+
+        /// <summary>Text in the UI language when the font (with its fallbacks, e.g. CJK) can draw it, else English.</summary>
+        private static string Localized(TMP_Text label, string text, string english)
+        {
+            return label != null && CanRender(label, text) ? text : english;
+        }
+
+        private static void SetLocalized(TMP_Text label, string text, string english)
+        {
+            if (label != null) label.text = Localized(label, text, english);
+        }
+
+        private static void SetPlaceholder(TMP_InputField field, string text, string english)
+        {
+            var ph = field != null ? field.placeholder as TMP_Text : null;
+            if (ph != null) ph.text = Localized(ph, text, english);
+        }
+
+        /// <summary>Lets a localized label shrink to fit its button instead of being cut.</summary>
+        private static void FitLabel(Button button)
+        {
+            var label = button.GetComponentInChildren<TextMeshProUGUI>();
+            if (label == null) return;
+            label.enableAutoSizing = true;
+            label.fontSizeMax = 14;
+            label.fontSizeMin = 9;
+        }
+
+        /// <summary>Selected option: accent colours; otherwise the neutral secondary colours.</summary>
+        private static void SetSelected(Button button, bool selected)
+        {
+            if (button == null) return;
+            var colors = button.colors;
+            colors.normalColor = selected ? COLOR_ACCENT : COLOR_SECONDARY;
+            colors.highlightedColor = selected ? COLOR_ACCENT_HOVER : COLOR_SECONDARY_HOVER;
+            colors.selectedColor = colors.normalColor;
+            button.colors = colors;
+            var img = button.targetGraphic as Image;
+            if (img != null) img.color = colors.normalColor;
         }
 
         // ─────────────────── PLANS PANEL (v1.12.0-pre.8) ───────────────────
@@ -913,6 +1341,7 @@ namespace VRLicensing
             if (plansPanel == null) return;
             EnsurePositioned();
             overlayPanel.SetActive(true);
+            if (feedbackPanel != null) feedbackPanel.SetActive(false);
             welcomePanel.SetActive(false);
             keyInputPanel.SetActive(false);
             demoExpiredPanel.SetActive(false);
@@ -1054,9 +1483,30 @@ namespace VRLicensing
                 {
                     string termLabel = LicenseStrings.TermLabel(tb.term, lang);
                     if (!CanRender(tb.label, termLabel)) termLabel = LicenseStrings.TermLabel(tb.term, "en");
-                    tb.label.text = string.IsNullOrEmpty(tb.price) ? termLabel : $"{termLabel}  ·  {tb.price}";
+                    tb.label.text = PlanButtonText(tb, termLabel, lang);
                 }
             }
+        }
+
+        /// <summary>
+        /// Label of a plan button. Plain plan: "Annual  ·  US$399.99". With an intro offer
+        /// (v1.12.0-pre.9, spec 08 §4.5) the store's localized intro price takes the first line
+        /// and a smaller second line says how long it lasts and the regular price afterwards:
+        /// "Annual  ·  US$299.99" / "for the first 1 year, then US$399.99". Every price string
+        /// is the store's own; only the duration words and the connective are ours.
+        /// </summary>
+        private string PlanButtonText(StoreTermButton tb, string termLabel, string lang)
+        {
+            if (string.IsNullOrEmpty(tb.price)) return termLabel;
+            var plan = tb.plan;
+            if (plan == null || !plan.HasIntroOffer) return $"{termLabel}  ·  {tb.price}";
+
+            string duration = LicenseStrings.Duration(plan.introTerm, plan.introTermCount, lang);
+            if (duration == null) return $"{termLabel}  ·  {tb.price}"; // unknown intro term: show the plan as usual
+            string note = LicenseStrings.IntroOfferNote(duration, tb.price, lang);
+            if (!CanRender(tb.label, note))
+                note = LicenseStrings.IntroOfferNote(LicenseStrings.Duration(plan.introTerm, plan.introTermCount, "en"), tb.price, "en");
+            return $"{termLabel}  ·  {plan.introFormattedPrice}\n<size=72%>{note}</size>";
         }
 
         private void StartPopulate(StoreColumn col, GameObject divider, RectTransform keyColumn)
@@ -1116,6 +1566,10 @@ namespace VRLicensing
                 StoreTermPrice plan = result.product != null ? result.product.FindTerm(tb.term) : null;
                 bool show = plan != null && !string.IsNullOrEmpty(plan.formattedPrice);
                 tb.price = show ? plan.formattedPrice : null;
+                tb.plan = show ? plan : null;
+                if (tb.label != null) tb.label.enableWordWrapping = false; // two explicit lines at most
+                if (show && plan.HasIntroOffer)
+                    Debug.Log($"[VR Licensing] Intro offer on {tb.term}: {plan.introFormattedPrice} for {plan.introTermCount} x {plan.introTerm}, then {plan.formattedPrice}.");
                 tb.button.gameObject.SetActive(show);
                 tb.button.interactable = show;
                 if (show) visible++;
@@ -1992,7 +2446,7 @@ namespace VRLicensing
         }
 
         private TMP_InputField CreateKeyInputField(string name, RectTransform parent, float width,
-            int charLimit = 4, string placeholderText = "XXXX", bool allowDashes = false)
+            int charLimit = 4, string placeholderText = "XXXX", bool allowDashes = false, bool freeText = false)
         {
             var go = new GameObject(name);
             go.transform.SetParent(parent, false);
@@ -2026,20 +2480,22 @@ namespace VRLicensing
             phGo.transform.SetParent(textArea.transform, false);
             var ph = phGo.AddComponent<TextMeshProUGUI>();
             ph.text = placeholderText;
-            ph.fontSize = 20;
+            ph.fontSize = freeText ? 15 : 20;
             ph.color = new Color(0.35f, 0.35f, 0.42f, 0.5f);
-            ph.alignment = TextAlignmentOptions.Center;
+            ph.alignment = freeText ? TextAlignmentOptions.MidlineLeft : TextAlignmentOptions.Center;
             ph.enableWordWrapping = false;
+            ph.overflowMode = TextOverflowModes.Ellipsis;
             SetRectFill(ph.rectTransform);
 
             // Input text
             var itGo = new GameObject("Text");
             itGo.transform.SetParent(textArea.transform, false);
             var it = itGo.AddComponent<TextMeshProUGUI>();
-            it.fontSize = 20;
-            it.fontStyle = FontStyles.Bold;
+            // Free text (feedback, survey): smaller regular type, left aligned, scrolls horizontally.
+            it.fontSize = freeText ? 15 : 20;
+            it.fontStyle = freeText ? FontStyles.Normal : FontStyles.Bold;
             it.color = COLOR_TEXT;
-            it.alignment = TextAlignmentOptions.Center;
+            it.alignment = freeText ? TextAlignmentOptions.MidlineLeft : TextAlignmentOptions.Center;
             it.enableWordWrapping = false;
             SetRectFill(it.rectTransform);
 
@@ -2471,6 +2927,8 @@ namespace VRLicensing
             if (keyField != null && keyField.isFocused) return true;
             if (expiredKeyField != null && expiredKeyField.isFocused) return true;
             if (licExpiredKeyField != null && licExpiredKeyField.isFocused) return true;
+            if (expSurveyText != null && expSurveyText.isFocused) return true;
+            if (fbText != null && fbText.isFocused) return true;
             return false;
         }
 

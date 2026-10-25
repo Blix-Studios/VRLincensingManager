@@ -227,6 +227,47 @@ namespace VRLicensing
         }
 
         // ────────────────────────────────────────────────────────────────────
+        // 4. In-app feedback / demo exit survey (v1.12.0-pre.9, contract §9).
+        //    SECURITY DEFINER RPC, same trust model as report_device_session.
+        //    Answer: {"ok":true,"id":"…"} or {"ok":false,"error":"<code>"}.
+        // ────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Calls <c>submit_app_feedback</c>. <paramref name="rating"/> 0 = none (feedback only);
+        /// <paramref name="category"/> for kind "feedback", <paramref name="reason"/> for kind
+        /// "demo_exit_reason". The callback always runs: a transport failure is reported as
+        /// <see cref="AppFeedback.ErrorNetwork"/>, a rejected body as "invalid_request".
+        /// </summary>
+        public IEnumerator SubmitAppFeedback(int productId, string kind, int rating, string category,
+            string reason, string text, string appVersion, string locale, Action<AppFeedback.Result> onDone)
+        {
+            string body;
+            try
+            {
+                body = AppFeedback.BuildRequestBody(SystemInfo.deviceUniqueIdentifier, productId, kind,
+                    rating, category, reason, text, appVersion, locale);
+            }
+            catch (ArgumentException e)
+            {
+                onDone?.Invoke(AppFeedback.Result.Failure("invalid_request: " + e.Message));
+                yield break;
+            }
+
+            using (var request = BuildRpc("submit_app_feedback", body))
+            {
+                yield return request.SendWebRequest();
+
+                if (request.result != UnityWebRequest.Result.Success)
+                {
+                    Debug.LogWarning($"[VR Licensing] submit_app_feedback failed: {request.error} {Snippet(request)}");
+                    onDone?.Invoke(AppFeedback.Result.Failure(AppFeedback.ErrorNetwork));
+                    yield break;
+                }
+                onDone?.Invoke(AppFeedback.ParseResult(request.downloadHandler.text));
+            }
+        }
+
+        // ────────────────────────────────────────────────────────────────────
         // Connectivity (unchanged)
         // ────────────────────────────────────────────────────────────────────
 

@@ -26,7 +26,22 @@ namespace VRLicensing
         /// <summary>Numeric price in hundredths as the store reports it (Price.AmountInHundredths); 0 = not provided.</summary>
         public uint amountInHundredths;
         public string currency;
+        /// <summary>True when the billing plan carries a FREE_TRIAL offer.</summary>
         public bool hasTrial;
+
+        // v1.12.0-pre.9 — intro offer (Meta OfferType.INTRO_OFFER) on this billing plan, if any.
+        // All texts come from the store (localized); the client never invents a price.
+        /// <summary>Localized intro price exactly as the store formats it, or null.</summary>
+        public string introFormattedPrice;
+        public uint introAmountInHundredths;
+        /// <summary>OfferTerm token of ONE intro period (e.g. MONTHLY); the intro lasts introTermCount periods.</summary>
+        public string introTerm;
+        /// <summary>Number of intro periods (TrialOffer.MaxTermCount); 0 = none.</summary>
+        public int introTermCount;
+
+        /// <summary>The store reported a usable intro offer for this term.</summary>
+        public bool HasIntroOffer =>
+            !string.IsNullOrEmpty(introFormattedPrice) && introTermCount > 0 && !string.IsNullOrEmpty(introTerm);
 
         /// <summary>
         /// Numeric price: the store's amount when it gave one, otherwise a robust parse of the
@@ -318,6 +333,25 @@ namespace VRLicensing
         }
 
         /// <summary>Length of a Meta OfferTerm in months (weeks as fractions). 0 = unknown token.</summary>
+        /// <summary>
+        /// Length of a Meta OfferTerm as a count of a calendar unit ("week", "month", "year"),
+        /// for localized durations ("first 3 months"). False for unknown terms.
+        /// </summary>
+        public static bool TermUnit(string term, out int count, out string unit)
+        {
+            switch (NormalizeTerm(term))
+            {
+                case "WEEKLY": count = 1; unit = "week"; return true;
+                case "BIWEEKLY": count = 2; unit = "week"; return true;
+                case "MONTHLY": count = 1; unit = "month"; return true;
+                case "QUARTERLY": count = 3; unit = "month"; return true;
+                case "SEMIANNUAL": count = 6; unit = "month"; return true;
+                case "ANNUAL": count = 1; unit = "year"; return true;
+                case "BIANNUAL": count = 2; unit = "year"; return true;
+                default: count = 0; unit = null; return false;
+            }
+        }
+
         public static decimal TermMonths(string term)
         {
             switch (NormalizeTerm(term))

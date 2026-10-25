@@ -418,6 +418,7 @@ namespace VRLicensing
                         serverDemoUsed = status.demo_used_seconds;
                         serverReportedDemo = status.demo_used_seconds;
                         ApplyServerDemoReset(status);
+                        NoteDemoResetAt(status);
                         ActivePromo = (status.promo != null && status.promo.IsValid) ? status.promo : null;
 
                         // If server has more demo time used than local, trust the server
@@ -1170,11 +1171,20 @@ namespace VRLicensing
                 Debug.Log("[VR Licensing] Plans opened during the demo — demo paused.");
             }
             uiBuilder.ShowPlans(fromDemo);
-            if (!plansPanelOpen)
-            {
-                plansPanelOpen = true;
-                QueueStoreEvent(StoreEventQueue.PlansOpened, null);
-            }
+            NotifyPlansShown();
+        }
+
+        /// <summary>
+        /// Called by the UI whenever a panel with the subscription plans becomes visible: the
+        /// plans panel (welcome "Subscribe" / pause menu), the demo-expired panel and the
+        /// license-expired panel in store builds. Queues <c>plans_opened</c> once per opening
+        /// (spec 08 §4.2); the flag resets when the modal moves to another state or closes.
+        /// </summary>
+        public void NotifyPlansShown()
+        {
+            if (!StoreOffersEnabled || plansPanelOpen) return;
+            plansPanelOpen = true;
+            QueueStoreEvent(StoreEventQueue.PlansOpened, null);
         }
 
         /// <summary>
@@ -1200,6 +1210,157 @@ namespace VRLicensing
             }
 
             if (CurrentState == LicenseState.Unlicensed) uiBuilder.ShowWelcome();
+        }
+
+        // ─────────────── Feedback and demo exit survey (v1.12.0-pre.9) ───────────────
+        // Spec 08 §5, contract §9. Both go through submit_app_feedback (SECURITY DEFINER):
+        // never a user name, e-mail or Meta user id — device id, product, answer, app version
+        // and the UI language only.
+
+        private const string EXIT_SURVEY_KEY_PREFIX = "vrl_exit_survey_"; // + productId → ISO time of the answer / skip
+        private string lastDemoResetAt;   // newest demo_reset_at the server reported (this run or cached)
+        private bool feedbackPausedDemo;
+        private bool feedbackOpen;
+
+        /// <summary>
+        /// Version string sent as <c>p_app_version</c> (max 40, e.g. "1.0.0 (27)"). Defaults to
+        /// <c>Application.version</c>; a host may set it to include its build number.
+        /// </summary>
+        public static string AppVersion { get; set; }
+        private static string EffectiveAppVersion => string.IsNullOrEmpty(AppVersion) ? Application.version : AppVersion;
+
+        private string ExitSurveyKey => EXIT_SURVEY_KEY_PREFIX + config.productId;
+
+        private void NoteDemoResetAt(DeviceStatus status)
+        {
+            if (status == null || string.IsNullOrEmpty(status.demo_reset_at)) return;
+            lastDemoResetAt = status.demo_reset_at;
+        }
+
+        /// <summary>
+        /// Whether the demo-expired panel should ask "What stopped you?": never answered or
+        /// skipped on this headset for this product, or an admin demo reset happened after the
+        /// stored answer (contract §9). The reset date is the one the server reported, falling
+        /// back to the sealed marker kept for the demo accounting.
+        /// </summary>
+        public bool ShouldAskExitSurvey()
+        {
+            if (config == null) return false;
+            string reset = lastDemoResetAt;
+            if (string.IsNullOrEmpty(reset)) reset = SecureLicenseStorage.GetDemoResetMarker();
+            return AppFeedback.ShouldAskExitSurvey(PlayerPrefs.GetString(ExitSurveyKey, ""), reset);
+        }
+
+        private void MarkExitSurveyAnswered()
+        {
+            PlayerPrefs.SetString(ExitSurveyKey, AppFeedback.Stamp(DateTime.UtcNow));
+            PlayerPrefs.Save();
+        }
+
+        /// <summary>The user skipped the exit survey: never asked again (until an admin demo reset).</summary>
+        public void SkipExitSurvey()
+        {
+            MarkExitSurveyAnswered();
+            Debug.Log("[VR Licensing] Exit survey skipped.");
+        }
+
+        /// <summary>
+        /// Sends the exit-survey answer (reason code + optional text) and remembers that it was
+        /// answered — also when the server rejects it, so the question is asked once.
+        /// </summary>
+        public void SubmitExitSurvey(string reason, string text, Action<AppFeedback.Result> onDone)
+        {
+            MarkExitSurveyAnswered();
+            StartCoroutine(SubmitFeedbackRoutine(AppFeedback.KindDemoExit, 0, null, reason, text, onDone));
+        }
+
+        /// <summary>
+        /// Sends pause-menu feedback: <paramref name="rating"/> 1-5 or 0 for none, a category
+        /// (bug / performance / content / suggestion) and optional text (max 500).
+        /// </summary>
+        public void SubmitFeedback(int rating, string category, string text, Action<AppFeedback.Result> onDone)
+        {
+            StartCoroutine(SubmitFeedbackRoutine(AppFeedback.KindFeedback, rating, category, null, text, onDone));
+        }
+
+        private IEnumerator SubmitFeedbackRoutine(string kind, int rating, string category, string reason,
+            string text, Action<AppFeedback.Result> onDone)
+        {
+            string locale = LicenseStrings.CurrentLanguage; // the language the license UI is showing
+
+            if (AppFeedback.StubSubmitter != null) // editor stub / tests: nothing leaves the device
+            {
+                yield return null;
+                onDone?.Invoke(AppFeedback.StubSubmitter(kind));
+                yield break;
+            }
+
+            AppFeedback.Result result = null;
+            yield return supabaseClient.SubmitAppFeedback(config.productId, kind, rating, category, reason,
+                text, EffectiveAppVersion, locale, r => result = r);
+            if (result == null) result = AppFeedback.Result.Failure(AppFeedback.ErrorNetwork);
+            Debug.Log(result.ok
+                ? $"[VR Licensing] {kind} sent (id {result.id})."
+                : $"[VR Licensing] {kind} not accepted: {result.error}.");
+            onDone?.Invoke(result);
+        }
+
+        /// <summary>
+        /// Opens the feedback panel (rating, category, optional text) over the game — typically
+        /// from the pause menu. Works in every simulator, store build or not. During the demo the
+        /// stopwatch pauses until <see cref="CloseFeedback"/>. Ignored while the modal already
+        /// shows an expiry panel or while the plans panel is open.
+        /// </summary>
+        public void ShowFeedback()
+        {
+            if (uiBuilder == null || feedbackOpen) return;
+            if (CurrentState == LicenseState.Expired || CurrentState == LicenseState.ClockTampered || plansPausedDemo)
+            {
+                Debug.Log($"[VR Licensing] ShowFeedback ignored in state {CurrentState}.");
+                return;
+            }
+
+            bool fromDemo = CurrentState == LicenseState.Demo;
+            if (fromDemo && demoManager != null)
+            {
+                demoManager.StopDemo();
+                feedbackPausedDemo = true;
+                Debug.Log("[VR Licensing] Feedback opened during the demo — demo paused.");
+            }
+            feedbackOpen = true;
+            uiBuilder.ShowFeedback(fromDemo);
+        }
+
+        /// <summary>Closes the feedback panel and restores what was on screen (demo resumes).</summary>
+        public void CloseFeedback()
+        {
+            if (!feedbackOpen) return;
+            feedbackOpen = false;
+            if (uiBuilder == null) return;
+            uiBuilder.HideFeedback();
+
+            if (feedbackPausedDemo)
+            {
+                feedbackPausedDemo = false;
+                if (CurrentState == LicenseState.Demo && demoManager != null)
+                {
+                    Debug.Log("[VR Licensing] Feedback closed — demo resumed.");
+                    SetState(LicenseState.Demo, forceUpdate: true);
+                    demoManager.StartDemo(config.demoDurationSeconds);
+                }
+                return;
+            }
+
+            if (CurrentState == LicenseState.Unlicensed) uiBuilder.ShowWelcome();
+            else uiBuilder.HideAll();
+        }
+
+        /// <summary>Editor/test helper: forget the exit-survey answer so the panel asks again.</summary>
+        public static void ClearExitSurveyAnswer()
+        {
+            for (int productId = 0; productId < 100; productId++)
+                PlayerPrefs.DeleteKey(EXIT_SURVEY_KEY_PREFIX + productId);
+            PlayerPrefs.Save();
         }
 
         /// <summary>
@@ -1305,6 +1466,10 @@ namespace VRLicensing
 
             // The demo countdown HUD is only visible while in Demo state.
             if (state != LicenseState.Demo) uiBuilder.HideDemoTimer();
+
+            // plans_opened is counted once per opening of a panel with plans; any state other
+            // than Expired shows (or hides) something else, so the next expiry counts again.
+            if (state != LicenseState.Expired) plansPanelOpen = false;
 
             switch (state)
             {
@@ -1420,6 +1585,7 @@ namespace VRLicensing
                         serverReportedDemo = status.demo_used_seconds;
                         ActivePromo = (status.promo != null && status.promo.IsValid) ? status.promo : null;
                         if (ApplyServerDemoReset(status)) localDemo = status.demo_used_seconds;
+                        NoteDemoResetAt(status);
                         if (status.demo_used_seconds > localDemo)
                             SecureLicenseStorage.SetDemoUsedSeconds(status.demo_used_seconds);
                     }

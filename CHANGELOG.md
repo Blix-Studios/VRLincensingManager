@@ -3,23 +3,70 @@
 All notable changes to `com.blixstudios.vr-licensing`. Pre-release tags (`vX.Y.Z-pre.N`) are
 test builds for VirtualChainsaw; the final tag is cut only after QA on the headset.
 
-## 1.12.0-pre.9 — 2026-10-23
+## 1.12.0-pre.9 — 2026-10-25
 
-- **Purchase telemetry.** New store event `plans_opened`, queued once per opening of the plans
-  panel (`LicenseManager.ShowPlans`: welcome "Subscribe" button or the game's pause menu).
-  Server side: `report_device_session` must accept the name in its `p_events` allow-list
-  (migration) and the contract (`03-LICENSING-CONTRACT.md` §8) lists it with the others:
-  `plans_opened`, `checkout_opened`, `checkout_completed`, `checkout_cancelled`,
-  `subscription_verified`. Fields are unchanged: name, sku, term (empty for plans_opened), at.
+Engagement layer, part 1 (spec `08-ENGAGEMENT-CAMPAIGNS.md` §4–§5, contract §9). The tag was
+first cut on 2026-10-23 with the telemetry items only and moved to this commit once the scope
+was complete; build 27 of VirtualChainsaw (not uploaded) is the first consumer.
+
+### Purchase telemetry
+- New store event `plans_opened`, queued **once per opening of a panel with plans**: the
+  demo-expired panel, the license-expired panel (store builds) and the plans panel reached from
+  the welcome "Subscribe" button or the game's pause menu (`LicenseManager.ShowPlans`). The UI
+  reports through `LicenseManager.NotifyPlansShown()`; the once-per-opening flag resets when the
+  modal moves to another state. Server side: `report_device_session` must accept the name in its
+  `p_events` allow-list (migration `20261101000000`); the names are `plans_opened`,
+  `checkout_opened`, `checkout_completed`, `checkout_cancelled`, `subscription_verified`.
+  Fields unchanged: name, sku, term (empty for plans_opened), at.
 - `plans_opened` and every `checkout_*` event are reported **immediately** through
   `report_device_session` instead of waiting for the next session report. Reports are serialised
   (one in flight at a time) so the demo delta is never sent twice.
 - The event queue is **persisted** in PlayerPrefs (`vrl_store_events`, no personal data) and
   flushed with the first report after start; a failed report puts its events back in the queue.
-- `StoreEventQueue` (new, plain C#) with edit-mode tests under `Tests/Editor`
-  (`VRLicensing.Tests`): JSON shape without user/device ids, persistence round trip, drain,
-  restore order, 50-event cap, escaping.
-- No contract change beyond the new event name (RPC signature and Edge Function unchanged).
+- `StoreEventQueue` (plain C#) with edit-mode tests.
+
+### Intro offers
+- When a billing plan of the subscription SKU carries an `INTRO_OFFER` (`TrialOffer.TrialType`),
+  `StoreTermPrice` exposes it (`introFormattedPrice`, `introTerm`, `introTermCount`,
+  `HasIntroOffer`) and the plan button shows **the store's localized intro price** on the first
+  line and, smaller, how long it lasts and the regular price afterwards: "Annual · US$299.99" /
+  "for the first 1 year, then US$399.99". Prices are the store's strings verbatim; only the
+  duration words (week/month/year with plurals, Russian 1/2–4/5+ forms, Chinese counters) and
+  the connective are localized by the package (11 languages). No offer → nothing changes.
+  `FREE_TRIAL` offers only set `hasTrial`. The "Best value" rule still uses regular prices.
+- Editor store stub: *Store stub: intro offer on ANNUAL (toggle)*.
+
+### Feedback and demo exit survey (`submit_app_feedback`, contract §9)
+- **Feedback panel**: `LicenseManager.ShowFeedback()` / `CloseFeedback()` open a panel with an
+  optional 1–5 rating, a required category (`bug`, `performance`, `content`, `suggestion`),
+  optional text (system keyboard, 500 characters) and a thank-you line; during the demo the
+  stopwatch pauses, "Back" resumes it. Works in every simulator, store build or not. Label a
+  pause-menu button with `LicenseStrings.Feedback()` (VirtualChainsaw: `PauseMenuFeedbackButton`).
+- **Demo exit survey** on the demo-expired panel, before the plans/key columns: "What stopped
+  you?" with `price`, `for_my_company`, `not_what_i_expected`, `other`, optional text, Send or
+  Skip. Asked **once per headset and product**; answered or skipped, the time is stored
+  (`vrl_exit_survey_<productId>`) and the question returns only when `get_device_status` /
+  `report_device_session` carry a `demo_reset_at` later than that time (admin demo reset).
+  `for_my_company` moves on to the key column with a localized line saying companies request a
+  quote on the website and receive license keys — **no URL, QR or price** (store rule).
+  `plans_opened` is counted when the columns appear, not while the question is up.
+- RPC: `submit_app_feedback(p_device_id, p_product_id, p_kind, p_rating, p_category, p_reason,
+  p_text, p_app_version, p_locale)`; optional members are omitted; `p_locale` is the language the
+  license UI is showing (`LicenseStrings.CurrentLanguage`, short BCP-47); `p_app_version` is
+  `Application.version` unless the host sets `LicenseManager.AppVersion` (e.g. "1.0.0 (27)").
+  Errors handled: `rate_limited` (feedback: friendly "enough for today" line and close; survey:
+  treated as answered), transport failure (feedback: "try again later", inputs re-enabled;
+  survey: told briefly, asked only once). `AppFeedback` (plain C#) holds codes, limits, body
+  builder, result parser and the re-ask rule, all unit-tested.
+- Editor store stub answers feedback locally (`AppFeedback.StubSubmitter`), with toggles
+  *feedback answers rate_limited* and *Clear exit-survey answer (ask again)*.
+
+### Localization
+- All new texts (feedback title, rating hint, categories, placeholder, Send/Skip, thank-you,
+  errors, survey question and answers, company line, intro-offer note and durations) live in
+  `LicenseStrings` in the same 11 languages as the license panels, follow the language the host
+  shows (`LicenseStrings.LanguageOverride`) and fall back to English per label when the TMP font
+  and its fallbacks (CJK) cannot draw the text, exactly like the existing panels.
 
 ## 1.12.0-pre.8 — 2026-10-22
 

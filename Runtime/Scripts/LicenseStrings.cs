@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -157,6 +158,256 @@ namespace VRLicensing
             { "fi", "Takaisin" },
             { "sv", "Tillbaka" },
         };
+
+        // ───────────── v1.12.0-pre.9: intro offers, feedback and the demo exit survey ─────────────
+
+        // Calendar units for intro-offer durations: singular, plural (Russian adds the 2-4 form).
+        private static readonly Dictionary<string, string[]> WeekWords = new Dictionary<string, string[]>
+        {
+            { "en", new[] { "week", "weeks" } }, { "es", new[] { "semana", "semanas" } },
+            { "fr", new[] { "semaine", "semaines" } }, { "de", new[] { "Woche", "Wochen" } },
+            { "it", new[] { "settimana", "settimane" } }, { "pt", new[] { "semana", "semanas" } },
+            { "ru", new[] { "неделя", "недели", "недель" } }, { "zh", new[] { "周", "周" } },
+            { "hi", new[] { "सप्ताह", "सप्ताह" } }, { "fi", new[] { "viikko", "viikkoa" } },
+            { "sv", new[] { "vecka", "veckor" } },
+        };
+        private static readonly Dictionary<string, string[]> MonthWords = new Dictionary<string, string[]>
+        {
+            { "en", new[] { "month", "months" } }, { "es", new[] { "mes", "meses" } },
+            { "fr", new[] { "mois", "mois" } }, { "de", new[] { "Monat", "Monate" } },
+            { "it", new[] { "mese", "mesi" } }, { "pt", new[] { "mês", "meses" } },
+            { "ru", new[] { "месяц", "месяца", "месяцев" } }, { "zh", new[] { "个月", "个月" } },
+            { "hi", new[] { "महीना", "महीने" } }, { "fi", new[] { "kuukausi", "kuukautta" } },
+            { "sv", new[] { "månad", "månader" } },
+        };
+        private static readonly Dictionary<string, string[]> YearWords = new Dictionary<string, string[]>
+        {
+            { "en", new[] { "year", "years" } }, { "es", new[] { "año", "años" } },
+            { "fr", new[] { "an", "ans" } }, { "de", new[] { "Jahr", "Jahre" } },
+            { "it", new[] { "anno", "anni" } }, { "pt", new[] { "ano", "anos" } },
+            { "ru", new[] { "год", "года", "лет" } }, { "zh", new[] { "年", "年" } },
+            { "hi", new[] { "साल", "साल" } }, { "fi", new[] { "vuosi", "vuotta" } },
+            { "sv", new[] { "år", "år" } },
+        };
+
+        // "{0}" = duration ("3 months"), "{1}" = regular price. Second line of a plan button
+        // whose billing plan carries an intro offer; the first line shows the intro price.
+        private static readonly Dictionary<string, string> IntroNoteFormats = new Dictionary<string, string>
+        {
+            { "en", "for the first {0}, then {1}" },
+            { "es", "durante {0}, después {1}" },
+            { "fr", "pendant {0}, puis {1}" },
+            { "de", "für {0}, danach {1}" },
+            { "it", "per {0}, poi {1}" },
+            { "pt", "durante {0}, depois {1}" },
+            { "ru", "в течение {0}, затем {1}" },
+            { "zh", "首{0}，之后{1}" },
+            { "hi", "पहले {0} के लिए, फिर {1}" },
+            { "fi", "ensimmäiset {0}, sitten {1}" },
+            { "sv", "under {0}, därefter {1}" },
+        };
+
+        private static readonly Dictionary<string, string> FeedbackLabels = new Dictionary<string, string>
+        {
+            { "en", "Send feedback" }, { "es", "Enviar comentarios" }, { "fr", "Envoyer un avis" },
+            { "de", "Feedback senden" }, { "it", "Invia un feedback" }, { "pt", "Enviar feedback" },
+            { "ru", "Оставить отзыв" }, { "zh", "发送反馈" }, { "hi", "प्रतिक्रिया भेजें" },
+            { "fi", "Lähetä palautetta" }, { "sv", "Skicka feedback" },
+        };
+        private static readonly Dictionary<string, string> RatingHints = new Dictionary<string, string>
+        {
+            { "en", "How would you rate it? (optional)" }, { "es", "¿Qué nota le pones? (opcional)" },
+            { "fr", "Quelle note donnez-vous ? (facultatif)" }, { "de", "Wie bewerten Sie es? (optional)" },
+            { "it", "Che voto gli dai? (facoltativo)" }, { "pt", "Que nota você dá? (opcional)" },
+            { "ru", "Как вы его оцениваете? (необязательно)" }, { "zh", "您的评分？（可选）" },
+            { "hi", "आप इसे कैसे रेट करेंगे? (वैकल्पिक)" }, { "fi", "Minkä arvosanan annat? (valinnainen)" },
+            { "sv", "Vilket betyg ger du? (frivilligt)" },
+        };
+        private static readonly Dictionary<string, Dictionary<string, string>> CategoryLabels =
+            new Dictionary<string, Dictionary<string, string>>
+        {
+            { AppFeedback.CategoryBug, new Dictionary<string, string> {
+                { "en", "Problem / bug" }, { "es", "Problema / error" }, { "fr", "Problème / bug" }, { "de", "Problem / Fehler" },
+                { "it", "Problema / bug" }, { "pt", "Problema / erro" }, { "ru", "Проблема / ошибка" }, { "zh", "问题 / 故障" },
+                { "hi", "समस्या / बग" }, { "fi", "Ongelma / vika" }, { "sv", "Problem / bugg" } } },
+            { AppFeedback.CategoryPerformance, new Dictionary<string, string> {
+                { "en", "Performance" }, { "es", "Rendimiento" }, { "fr", "Performances" }, { "de", "Leistung" },
+                { "it", "Prestazioni" }, { "pt", "Desempenho" }, { "ru", "Производительность" }, { "zh", "性能" },
+                { "hi", "प्रदर्शन" }, { "fi", "Suorituskyky" }, { "sv", "Prestanda" } } },
+            { AppFeedback.CategoryContent, new Dictionary<string, string> {
+                { "en", "Content" }, { "es", "Contenido" }, { "fr", "Contenu" }, { "de", "Inhalt" },
+                { "it", "Contenuti" }, { "pt", "Conteúdo" }, { "ru", "Содержание" }, { "zh", "内容" },
+                { "hi", "सामग्री" }, { "fi", "Sisältö" }, { "sv", "Innehåll" } } },
+            { AppFeedback.CategorySuggestion, new Dictionary<string, string> {
+                { "en", "Suggestion" }, { "es", "Sugerencia" }, { "fr", "Suggestion" }, { "de", "Vorschlag" },
+                { "it", "Suggerimento" }, { "pt", "Sugestão" }, { "ru", "Предложение" }, { "zh", "建议" },
+                { "hi", "सुझाव" }, { "fi", "Ehdotus" }, { "sv", "Förslag" } } },
+        };
+        private static readonly Dictionary<string, string> TextPlaceholders = new Dictionary<string, string>
+        {
+            { "en", "Tell us more (optional)" }, { "es", "Cuéntanos más (opcional)" }, { "fr", "Dites-nous en plus (facultatif)" },
+            { "de", "Erzählen Sie uns mehr (optional)" }, { "it", "Dicci di più (facoltativo)" }, { "pt", "Conte-nos mais (opcional)" },
+            { "ru", "Расскажите подробнее (необязательно)" }, { "zh", "告诉我们更多（可选）" }, { "hi", "हमें और बताएं (वैकल्पिक)" },
+            { "fi", "Kerro lisää (valinnainen)" }, { "sv", "Berätta mer (frivilligt)" },
+        };
+        private static readonly Dictionary<string, string> SendLabels = new Dictionary<string, string>
+        {
+            { "en", "Send" }, { "es", "Enviar" }, { "fr", "Envoyer" }, { "de", "Senden" }, { "it", "Invia" },
+            { "pt", "Enviar" }, { "ru", "Отправить" }, { "zh", "发送" }, { "hi", "भेजें" }, { "fi", "Lähetä" }, { "sv", "Skicka" },
+        };
+        private static readonly Dictionary<string, string> SkipLabels = new Dictionary<string, string>
+        {
+            { "en", "Skip" }, { "es", "Omitir" }, { "fr", "Passer" }, { "de", "Überspringen" }, { "it", "Salta" },
+            { "pt", "Pular" }, { "ru", "Пропустить" }, { "zh", "跳过" }, { "hi", "छोड़ें" }, { "fi", "Ohita" }, { "sv", "Hoppa över" },
+        };
+        private static readonly Dictionary<string, string> ChooseCategoryLines = new Dictionary<string, string>
+        {
+            { "en", "Choose a category first." }, { "es", "Elige primero una categoría." }, { "fr", "Choisissez d'abord une catégorie." },
+            { "de", "Bitte zuerst eine Kategorie wählen." }, { "it", "Scegli prima una categoria." }, { "pt", "Escolha primeiro uma categoria." },
+            { "ru", "Сначала выберите категорию." }, { "zh", "请先选择一个类别。" }, { "hi", "पहले एक श्रेणी चुनें।" },
+            { "fi", "Valitse ensin luokka." }, { "sv", "Välj först en kategori." },
+        };
+        private static readonly Dictionary<string, string> ThanksLines = new Dictionary<string, string>
+        {
+            { "en", "Thank you for your feedback!" }, { "es", "¡Gracias por tus comentarios!" }, { "fr", "Merci pour votre avis !" },
+            { "de", "Vielen Dank für Ihr Feedback!" }, { "it", "Grazie per il tuo feedback!" }, { "pt", "Obrigado pelo seu feedback!" },
+            { "ru", "Спасибо за отзыв!" }, { "zh", "感谢您的反馈！" }, { "hi", "आपकी प्रतिक्रिया के लिए धन्यवाद!" },
+            { "fi", "Kiitos palautteestasi!" }, { "sv", "Tack för din feedback!" },
+        };
+        private static readonly Dictionary<string, string> SendFailedLines = new Dictionary<string, string>
+        {
+            { "en", "Could not send right now. Please try again later." }, { "es", "No se pudo enviar ahora. Inténtalo más tarde." },
+            { "fr", "Envoi impossible pour le moment. Réessayez plus tard." }, { "de", "Senden derzeit nicht möglich. Bitte später erneut versuchen." },
+            { "it", "Invio non riuscito. Riprova più tardi." }, { "pt", "Não foi possível enviar agora. Tente novamente mais tarde." },
+            { "ru", "Не удалось отправить. Попробуйте позже." }, { "zh", "目前无法发送，请稍后再试。" },
+            { "hi", "अभी नहीं भेजा जा सका। कृपया बाद में पुनः प्रयास करें।" }, { "fi", "Lähetys ei onnistunut. Yritä myöhemmin uudelleen." },
+            { "sv", "Kunde inte skicka just nu. Försök igen senare." },
+        };
+        private static readonly Dictionary<string, string> RateLimitedLines = new Dictionary<string, string>
+        {
+            { "en", "You have sent enough feedback for today. Thank you!" }, { "es", "Ya has enviado suficientes comentarios por hoy. ¡Gracias!" },
+            { "fr", "Vous avez envoyé assez d'avis pour aujourd'hui. Merci !" }, { "de", "Für heute reicht das Feedback. Vielen Dank!" },
+            { "it", "Hai già inviato abbastanza feedback per oggi. Grazie!" }, { "pt", "Você já enviou feedback suficiente por hoje. Obrigado!" },
+            { "ru", "На сегодня отзывов достаточно. Спасибо!" }, { "zh", "今天的反馈已足够，谢谢！" },
+            { "hi", "आज के लिए पर्याप्त प्रतिक्रिया मिल गई। धन्यवाद!" }, { "fi", "Palautetta on jo riittävästi tälle päivälle. Kiitos!" },
+            { "sv", "Du har skickat tillräckligt med feedback för idag. Tack!" },
+        };
+        private static readonly Dictionary<string, string> ExitQuestions = new Dictionary<string, string>
+        {
+            { "en", "What stopped you?" }, { "es", "¿Qué te frenó?" }, { "fr", "Qu'est-ce qui vous a retenu ?" },
+            { "de", "Was hat Sie abgehalten?" }, { "it", "Cosa ti ha frenato?" }, { "pt", "O que te impediu?" },
+            { "ru", "Что вас остановило?" }, { "zh", "是什么让您止步？" }, { "hi", "आपको किस बात ने रोका?" },
+            { "fi", "Mikä pysäytti sinut?" }, { "sv", "Vad hindrade dig?" },
+        };
+        private static readonly Dictionary<string, Dictionary<string, string>> ExitReasonLabels =
+            new Dictionary<string, Dictionary<string, string>>
+        {
+            { AppFeedback.ReasonPrice, new Dictionary<string, string> {
+                { "en", "The price" }, { "es", "El precio" }, { "fr", "Le prix" }, { "de", "Der Preis" },
+                { "it", "Il prezzo" }, { "pt", "O preço" }, { "ru", "Цена" }, { "zh", "价格" },
+                { "hi", "कीमत" }, { "fi", "Hinta" }, { "sv", "Priset" } } },
+            { AppFeedback.ReasonForMyCompany, new Dictionary<string, string> {
+                { "en", "It's for my company" }, { "es", "Es para mi empresa" }, { "fr", "C'est pour mon entreprise" }, { "de", "Es ist für meine Firma" },
+                { "it", "È per la mia azienda" }, { "pt", "É para a minha empresa" }, { "ru", "Это для моей компании" }, { "zh", "是给我公司用的" },
+                { "hi", "यह मेरी कंपनी के लिए है" }, { "fi", "Se on yritykselleni" }, { "sv", "Det är för mitt företag" } } },
+            { AppFeedback.ReasonNotWhatIExpected, new Dictionary<string, string> {
+                { "en", "Not what I expected" }, { "es", "No es lo que esperaba" }, { "fr", "Pas ce que j'attendais" }, { "de", "Nicht, was ich erwartet habe" },
+                { "it", "Non è quello che mi aspettavo" }, { "pt", "Não é o que eu esperava" }, { "ru", "Не то, что я ожидал" }, { "zh", "和我预期的不同" },
+                { "hi", "जैसा सोचा था वैसा नहीं" }, { "fi", "Ei sitä mitä odotin" }, { "sv", "Inte vad jag väntade mig" } } },
+            { AppFeedback.ReasonOther, new Dictionary<string, string> {
+                { "en", "Other" }, { "es", "Otro motivo" }, { "fr", "Autre" }, { "de", "Sonstiges" },
+                { "it", "Altro" }, { "pt", "Outro" }, { "ru", "Другое" }, { "zh", "其他" },
+                { "hi", "अन्य" }, { "fi", "Muu" }, { "sv", "Annat" } } },
+        };
+        private static readonly Dictionary<string, string> ExitThanksLines = new Dictionary<string, string>
+        {
+            { "en", "Thanks for letting us know." }, { "es", "Gracias por contárnoslo." }, { "fr", "Merci de nous l'avoir dit." },
+            { "de", "Danke für die Rückmeldung." }, { "it", "Grazie per avercelo detto." }, { "pt", "Obrigado por nos contar." },
+            { "ru", "Спасибо, что сообщили." }, { "zh", "感谢您的告知。" }, { "hi", "हमें बताने के लिए धन्यवाद।" },
+            { "fi", "Kiitos, että kerroit." }, { "sv", "Tack för att du berättade." },
+        };
+        // Shown after "It's for my company": the key path is on the same panel. No URL, QR or
+        // price (Meta App Policies 1.1 — store builds never point outside Meta).
+        private static readonly Dictionary<string, string> CompanyHintLines = new Dictionary<string, string>
+        {
+            { "en", "Companies and training centres request a quote on our website and receive license keys — enter yours here." },
+            { "es", "Las empresas y centros de formación piden presupuesto en nuestra web y reciben claves de licencia: introduce la tuya aquí." },
+            { "fr", "Les entreprises et centres de formation demandent un devis sur notre site et reçoivent des clés de licence : saisissez la vôtre ici." },
+            { "de", "Unternehmen und Schulungszentren fordern auf unserer Website ein Angebot an und erhalten Lizenzschlüssel – geben Sie Ihren hier ein." },
+            { "it", "Aziende e centri di formazione richiedono un preventivo sul nostro sito e ricevono chiavi di licenza: inserisci la tua qui." },
+            { "pt", "Empresas e centros de formação pedem um orçamento no nosso site e recebem chaves de licença: insira a sua aqui." },
+            { "ru", "Компании и учебные центры запрашивают предложение на нашем сайте и получают лицензионные ключи — введите свой здесь." },
+            { "zh", "企业和培训中心可在我们的网站上索取报价并获得许可证密钥，请在此输入您的密钥。" },
+            { "hi", "कंपनियाँ और प्रशिक्षण केंद्र हमारी वेबसाइट पर कोटेशन मांगते हैं और लाइसेंस कुंजी पाते हैं — अपनी कुंजी यहाँ दर्ज करें।" },
+            { "fi", "Yritykset ja koulutuskeskukset pyytävät tarjouksen verkkosivuiltamme ja saavat lisenssiavaimet – syötä omasi tähän." },
+            { "sv", "Företag och utbildningscenter begär en offert på vår webbplats och får licensnycklar – ange din här." },
+        };
+
+        /// <summary>
+        /// Localized duration of an intro offer: <paramref name="count"/> periods of a Meta
+        /// OfferTerm (e.g. 3 × MONTHLY → "3 months", 1 × ANNUAL → "1 year"). Null for unknown terms.
+        /// </summary>
+        public static string Duration(string term, int count, string language = null)
+        {
+            if (count <= 0 || !StoreSubscription.TermUnit(term, out int perTerm, out string unit)) return null;
+            string lang = language ?? CurrentLanguage;
+            int total = perTerm * count;
+            Dictionary<string, string[]> words = unit == "week" ? WeekWords : unit == "month" ? MonthWords : YearWords;
+            string[] forms = words.TryGetValue(lang, out var f) ? f : words["en"];
+            string word = Plural(forms, total, lang);
+            if (lang == "zh") return total + word; // 3个月, 1年
+            return total + " " + word;
+        }
+
+        private static string Plural(string[] forms, int n, string lang)
+        {
+            if (lang == "ru" && forms.Length >= 3)
+            {
+                int mod10 = n % 10, mod100 = n % 100;
+                if (mod10 == 1 && mod100 != 11) return forms[0];
+                if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return forms[1];
+                return forms[2];
+            }
+            if (lang == "fr" && n < 2) return forms[0]; // French: singular below 2
+            return n == 1 ? forms[0] : forms[Math.Min(1, forms.Length - 1)];
+        }
+
+        /// <summary>
+        /// Second line of a plan button with an intro offer: "for the first 3 months, then US$39.99".
+        /// <paramref name="duration"/> comes from <see cref="Duration"/>; prices are the store's strings.
+        /// </summary>
+        public static string IntroOfferNote(string duration, string regularPrice, string language = null)
+        {
+            return string.Format(Pick(IntroNoteFormats, language ?? CurrentLanguage), duration, regularPrice);
+        }
+
+        /// <summary>"Send feedback" (pause-menu button and feedback panel title).</summary>
+        public static string Feedback(string language = null) => Pick(FeedbackLabels, language ?? CurrentLanguage);
+        public static string RatingHint(string language = null) => Pick(RatingHints, language ?? CurrentLanguage);
+        public static string TextPlaceholder(string language = null) => Pick(TextPlaceholders, language ?? CurrentLanguage);
+        public static string Send(string language = null) => Pick(SendLabels, language ?? CurrentLanguage);
+        public static string Skip(string language = null) => Pick(SkipLabels, language ?? CurrentLanguage);
+        public static string ChooseCategory(string language = null) => Pick(ChooseCategoryLines, language ?? CurrentLanguage);
+        public static string Thanks(string language = null) => Pick(ThanksLines, language ?? CurrentLanguage);
+        public static string SendFailed(string language = null) => Pick(SendFailedLines, language ?? CurrentLanguage);
+        public static string RateLimited(string language = null) => Pick(RateLimitedLines, language ?? CurrentLanguage);
+        public static string ExitQuestion(string language = null) => Pick(ExitQuestions, language ?? CurrentLanguage);
+        public static string ExitThanks(string language = null) => Pick(ExitThanksLines, language ?? CurrentLanguage);
+        public static string CompanyHint(string language = null) => Pick(CompanyHintLines, language ?? CurrentLanguage);
+
+        /// <summary>Label of a feedback category code (bug, performance, content, suggestion).</summary>
+        public static string CategoryLabel(string category, string language = null)
+        {
+            if (category != null && CategoryLabels.TryGetValue(category, out var table)) return Pick(table, language ?? CurrentLanguage);
+            return category ?? "";
+        }
+
+        /// <summary>Label of a demo-exit reason code (price, for_my_company, not_what_i_expected, other).</summary>
+        public static string ExitReasonLabel(string reason, string language = null)
+        {
+            if (reason != null && ExitReasonLabels.TryGetValue(reason, out var table)) return Pick(table, language ?? CurrentLanguage);
+            return reason ?? "";
+        }
 
         /// <summary>"Subscribe" button label (welcome panel, game pause menu).</summary>
         public static string Subscribe(string language = null) => Pick(SubscribeLabels, language ?? CurrentLanguage);
