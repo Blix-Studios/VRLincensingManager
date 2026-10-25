@@ -3,13 +3,18 @@
 All notable changes to `com.blixstudios.vr-licensing`. Pre-release tags (`vX.Y.Z-pre.N`) are
 test builds for VirtualChainsaw; the final tag is cut only after QA on the headset.
 
-## 1.12.0-pre.10 — 2026-10-25 (tag `v1.12.0-pre.10` = 798fb4e)
+## 1.12.0-pre.11 — 2026-10-25 (tag `v1.12.0-pre.11`) — use this one
+
+Same code as `v1.12.0-pre.10` (798fb4e) with `package.json` at the right version. **pre.10 was
+published with a stale `package.json` (`1.12.0-pre.9`)**: do not pin it. Rule from now on: the
+`package.json` bump goes in the same commit that gets the tag, never in a later one.
+
+## 1.12.0-pre.10 — 2026-10-25 (tag `v1.12.0-pre.10` = 798fb4e, superseded by pre.11)
 
 Engagement layer, part 1 (spec `08-ENGAGEMENT-CAMPAIGNS.md` §4–§5, contract §9), on top of
 the pre.9 telemetry: `plans_opened` on every panel with plans, intro offers, feedback panel,
-demo exit survey and the host-side language sync. First consumer: VirtualChainsaw build 27
-(not uploaded). Note: `package.json` at the tagged commit still reads `1.12.0-pre.9`; the
-version string was bumped in the following commit.
+demo exit survey and the host-side language sync. First consumer: VirtualChainsaw build 28
+(not uploaded), pinned to pre.11. `package.json` at this tag still reads `1.12.0-pre.9` — see pre.11.
 
 ### Purchase telemetry (completes pre.9)
 - `plans_opened` is now queued **once per opening of any panel with plans**: the demo-expired
