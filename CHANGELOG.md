@@ -3,27 +3,21 @@
 All notable changes to `com.blixstudios.vr-licensing`. Pre-release tags (`vX.Y.Z-pre.N`) are
 test builds for VirtualChainsaw; the final tag is cut only after QA on the headset.
 
-## 1.12.0-pre.9 — 2026-10-25
+## 1.12.0-pre.10 — 2026-10-25 (tag `v1.12.0-pre.10` = 798fb4e)
 
-Engagement layer, part 1 (spec `08-ENGAGEMENT-CAMPAIGNS.md` §4–§5, contract §9). The tag was
-first cut on 2026-10-23 with the telemetry items only and moved to this commit once the scope
-was complete; build 27 of VirtualChainsaw (not uploaded) is the first consumer.
+Engagement layer, part 1 (spec `08-ENGAGEMENT-CAMPAIGNS.md` §4–§5, contract §9), on top of
+the pre.9 telemetry: `plans_opened` on every panel with plans, intro offers, feedback panel,
+demo exit survey and the host-side language sync. First consumer: VirtualChainsaw build 27
+(not uploaded). Note: `package.json` at the tagged commit still reads `1.12.0-pre.9`; the
+version string was bumped in the following commit.
 
-### Purchase telemetry
-- New store event `plans_opened`, queued **once per opening of a panel with plans**: the
-  demo-expired panel, the license-expired panel (store builds) and the plans panel reached from
-  the welcome "Subscribe" button or the game's pause menu (`LicenseManager.ShowPlans`). The UI
-  reports through `LicenseManager.NotifyPlansShown()`; the once-per-opening flag resets when the
-  modal moves to another state. Server side: `report_device_session` must accept the name in its
-  `p_events` allow-list (migration `20261101000000`); the names are `plans_opened`,
-  `checkout_opened`, `checkout_completed`, `checkout_cancelled`, `subscription_verified`.
-  Fields unchanged: name, sku, term (empty for plans_opened), at.
-- `plans_opened` and every `checkout_*` event are reported **immediately** through
-  `report_device_session` instead of waiting for the next session report. Reports are serialised
-  (one in flight at a time) so the demo delta is never sent twice.
-- The event queue is **persisted** in PlayerPrefs (`vrl_store_events`, no personal data) and
-  flushed with the first report after start; a failed report puts its events back in the queue.
-- `StoreEventQueue` (plain C#) with edit-mode tests.
+### Purchase telemetry (completes pre.9)
+- `plans_opened` is now queued **once per opening of any panel with plans**: the demo-expired
+  panel, the license-expired panel (store builds) and the plans panel reached from the welcome
+  "Subscribe" button or the game's pause menu. The UI reports through
+  `LicenseManager.NotifyPlansShown()`; the once-per-opening flag resets when the modal moves to
+  another state. On the demo-expired panel it counts when the columns appear, not while the
+  exit survey is up.
 
 ### Intro offers
 - When a billing plan of the subscription SKU carries an `INTRO_OFFER` (`TrialOffer.TrialType`),
@@ -62,11 +56,33 @@ was complete; build 27 of VirtualChainsaw (not uploaded) is the first consumer.
   *feedback answers rate_limited* and *Clear exit-survey answer (ask again)*.
 
 ### Localization
+- Host-side language sync: set `LicenseStrings.LanguageOverride` from the app's selected locale
+  so the license UI follows the simulator's language menu, not the headset language
+  (VirtualChainsaw: `LicenseLanguageSync`, Unity Localization `SelectedLocaleChanged`). The same
+  code is sent as `p_locale`.
 - All new texts (feedback title, rating hint, categories, placeholder, Send/Skip, thank-you,
   errors, survey question and answers, company line, intro-offer note and durations) live in
   `LicenseStrings` in the same 11 languages as the license panels, follow the language the host
   shows (`LicenseStrings.LanguageOverride`) and fall back to English per label when the TMP font
   and its fallbacks (CJK) cannot draw the text, exactly like the existing panels.
+
+## 1.12.0-pre.9 — 2026-10-23 (tag `v1.12.0-pre.9` = 40c093d, telemetry only)
+
+- **Purchase telemetry.** New store event `plans_opened`, queued once per opening of the plans
+  panel (`LicenseManager.ShowPlans`: welcome "Subscribe" button or the game's pause menu).
+  Server side: `report_device_session` must accept the name in its `p_events` allow-list
+  (migration `20261101000000`) and the contract (`03-LICENSING-CONTRACT.md` §8) lists it with
+  the others: `plans_opened`, `checkout_opened`, `checkout_completed`, `checkout_cancelled`,
+  `subscription_verified`. Fields are unchanged: name, sku, term (empty for plans_opened), at.
+- `plans_opened` and every `checkout_*` event are reported **immediately** through
+  `report_device_session` instead of waiting for the next session report. Reports are serialised
+  (one in flight at a time) so the demo delta is never sent twice.
+- The event queue is **persisted** in PlayerPrefs (`vrl_store_events`, no personal data) and
+  flushed with the first report after start; a failed report puts its events back in the queue.
+- `StoreEventQueue` (new, plain C#) with edit-mode tests under `Tests/Editor`
+  (`VRLicensing.Tests`): JSON shape without user/device ids, persistence round trip, drain,
+  restore order, 50-event cap, escaping.
+- No contract change beyond the new event name (RPC signature and Edge Function unchanged).
 
 ## 1.12.0-pre.8 — 2026-10-22
 

@@ -118,7 +118,7 @@ in any state other than `Unlicensed` / `Demo` and without a store platform, so t
 safe in company APKs too. VirtualChainsaw does this with `PauseMenuSubscribeButton`, a small
 component on the pause-menu panel that clones one of the existing buttons at runtime.
 
-### Feedback and demo exit survey (v1.12.0-pre.9)
+### Feedback and demo exit survey (v1.12.0-pre.10)
 
 Every simulator (store build or not) can let the user send feedback from its own UI:
 
