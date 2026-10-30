@@ -70,6 +70,22 @@ namespace VRLicensing.Tests
         }
 
         [Test]
+        public void Dutch_IsSupportedAndTranslated()
+        {
+            Assert.Contains("nl", LicenseStrings.SupportedLanguages);
+            Assert.AreEqual("nl", LicenseStrings.FromSystemLanguage(UnityEngine.SystemLanguage.Dutch));
+            Assert.AreEqual("3 maanden", LicenseStrings.Duration("MONTHLY", 3, "nl"));
+            Assert.AreEqual("1 maand", LicenseStrings.Duration("MONTHLY", 1, "nl"));
+            Assert.AreEqual("2 jaar", LicenseStrings.Duration("ANNUAL", 2, "nl"));
+            Assert.AreEqual("de eerste 1 jaar, daarna € 399,99", LicenseStrings.IntroOfferNote("1 jaar", "€ 399,99", "nl"));
+            Assert.AreEqual("Feedback sturen", LicenseStrings.Feedback("nl"));
+            Assert.AreEqual("Abonneren", LicenseStrings.Subscribe("nl"));
+            Assert.AreEqual("Jaarlijks", LicenseStrings.TermLabel("ANNUAL", "nl"));
+            Assert.AreEqual("Het is voor mijn bedrijf of school", LicenseStrings.ExitReasonLabel(AppFeedback.ReasonForMyCompany, "nl"));
+            Assert.AreEqual("Apparaatcode: ABCDE-12345", LicenseStrings.DeviceCodeLine("ABCDE-12345", "nl"));
+        }
+
+        [Test]
         public void Duration_UnknownLanguageFallsBackToEnglish()
         {
             Assert.AreEqual("3 months", LicenseStrings.Duration("MONTHLY", 3, "xx"));

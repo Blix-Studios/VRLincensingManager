@@ -3,6 +3,16 @@
 All notable changes to `com.blixstudios.vr-licensing`. Pre-release tags (`vX.Y.Z-pre.N`) are
 test builds for VirtualChainsaw; the final tag is cut only after QA on the headset.
 
+## 1.12.0-pre.12 — 2026-10-30 (tag `v1.12.0-pre.12`)
+
+- **Dutch (`nl`)** added to every license-UI string table in `LicenseStrings` (device code, best
+  value, benefits, term labels, Subscribe/Back, intro-offer durations and note, feedback panel,
+  exit survey, company line) — informal "je" form, "jaar" invariable after a number, exit reason
+  `for_my_company` reads "Het is voor mijn bedrijf of school" (first Dutch customer is a school;
+  the reason code is unchanged). `SupportedLanguages` has 12 entries and
+  `SystemLanguage.Dutch` maps to `nl`; hosts with their own selector pass `"nl"` through
+  `LicenseStrings.LanguageOverride`. No contract change.
+
 ## 1.12.0-pre.11 — 2026-10-25 (tag `v1.12.0-pre.11`) — use this one
 
 Same code as `v1.12.0-pre.10` (798fb4e) with `package.json` at the right version. **pre.10 was

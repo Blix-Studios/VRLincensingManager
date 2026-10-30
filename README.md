@@ -93,7 +93,7 @@ Spec: `06-LICENSING-V1.12-SPEC.md` (VRInstructorRef). Everything below is additi
 | Boot (MetaHorizon) | Platform init + entitlement check within 10 s → cached key → cached store subscription → (phase B) server verification. Failures are logged; the app continues in demo/key mode unless `enforceEntitlement` is ON. |
 | Expired panels | Left column: Monthly / 6 months / Annual buttons with the store's localized prices (`IAP.GetProductsBySKU`); right column: license key. No URL, QR, external price or promo. If the store reports no products, the key column takes the centre and a console line says why. |
 | `LicenseState.SubscribedViaStore` | Equivalent to `Licensed` for gating; no client branding. Cached encrypted until `min(expiresAt + 3 days grace, verifiedAt + maxOfflineHours)`. |
-| Device code | `Device code: XXXXX-XXXXX` at the foot of every license panel, in 11 languages: first 10 hex chars (uppercase) of SHA-256 over the UTF-8 bytes of `SystemInfo.deviceUniqueIdentifier` — the exact string sent as `p_device_id`. |
+| Device code | `Device code: XXXXX-XXXXX` at the foot of every license panel, in 12 languages: first 10 hex chars (uppercase) of SHA-256 over the UTF-8 bytes of `SystemInfo.deviceUniqueIdentifier` — the exact string sent as `p_device_id`. |
 | Branding / telemetry | Now through `get_license_branding` / `report_telemetry` RPCs; falls back to the pre-1.12 direct table access while they return 404 (not deployed). |
 | Intro offers | If a billing plan carries an `INTRO_OFFER`, its button shows the store's localized intro price and, smaller, the duration and the regular price ("for the first 3 months, then US$39.99", 11 languages). Only the duration words are ours; no offer, no change. |
 | Store events (`p_events`) | `plans_opened` (once per opening of a panel with plans: demo-expired, license-expired, plans panel), `checkout_opened`, `checkout_completed`, `checkout_cancelled`, `subscription_verified` — name, SKU, term and UTC time only. Persisted in PlayerPrefs until reported; `plans_opened` and `checkout_*` are sent at once, the rest with the next session report. |
@@ -113,7 +113,7 @@ bool show = manager != null && manager.StoreOffersEnabled && manager.CurrentStat
 manager.ShowPlans();   // pauses the demo stopwatch; "Back" resumes it, a purchase unlocks
 ```
 
-Label it with `VRLicensing.LicenseStrings.Subscribe()` (11 languages). `ShowPlans()` is a no-op
+Label it with `VRLicensing.LicenseStrings.Subscribe()` (12 languages). `ShowPlans()` is a no-op
 in any state other than `Unlicensed` / `Demo` and without a store platform, so the wiring is
 safe in company APKs too. VirtualChainsaw does this with `PauseMenuSubscribeButton`, a small
 component on the pause-menu panel that clones one of the existing buttons at runtime.
