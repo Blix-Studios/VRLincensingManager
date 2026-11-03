@@ -177,8 +177,8 @@ namespace VRLicensing.Editor
                 EditorGUILayout.Space(2);
 
                 EditorGUILayout.PropertyField(_demoDurationProp,
-                    new GUIContent("Demo Duration (seconds)",
-                        "Maximum demo time in seconds. Default: 3600 (1 hour)."));
+                    new GUIContent("Demo Duration (seconds, offline fallback)",
+                        "Used only until the server reports the headset's demo_limit_seconds (per-headset value set from /admin, default 900 s). The server value is cached and wins once known."));
 
                 EditorGUILayout.Space(2);
 

@@ -23,7 +23,7 @@ namespace VRLicensing
         public string rsaPublicKeyPem;
 
         [Header("Simulator Settings")]
-        [Tooltip("Maximum demo time in seconds (default: 3600 = 1 hour)")]
+        [Tooltip("OFFLINE FALLBACK ONLY (v1.12.0-pre.13): demo time in seconds used until the server has reported this headset's demo_limit_seconds (set per headset from /admin, default 900). The server value is cached on the device and always wins once known.")]
         public float demoDurationSeconds = 3600f;
 
         [Tooltip("Maximum hours offline before requiring reconnection (default: 72)")]

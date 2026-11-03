@@ -41,7 +41,8 @@ namespace VRLicensing
         /// <summary>
         /// Starts the demo timer with the configured limit.
         /// </summary>
-        /// <param name="limitSeconds">Maximum demo time in seconds (from LicenseConfig.demoDurationSeconds)</param>
+        /// <param name="limitSeconds">Maximum demo time in seconds — the manager's effective limit
+        /// (server value, cached server value or LicenseConfig.demoDurationSeconds as fallback).</param>
         public void StartDemo(float limitSeconds)
         {
             demoLimitSeconds = limitSeconds;
@@ -58,6 +59,21 @@ namespace VRLicensing
                 isActive = false;
                 OnDemoExpired?.Invoke();
             }
+        }
+
+        /// <summary>Limit (seconds) the demo currently runs against.</summary>
+        public float LimitSeconds => demoLimitSeconds;
+
+        /// <summary>
+        /// v1.12.0-pre.13: applies a limit the server changed, without touching the stopwatch.
+        /// A higher value extends the remaining time (an exhausted demo stops being expired); a
+        /// lower value already exceeded ends the running demo on its next <see cref="Update"/>,
+        /// through the normal expiry path.
+        /// </summary>
+        public void SetLimit(float limitSeconds)
+        {
+            demoLimitSeconds = limitSeconds;
+            Diag($"SetLimit {limitSeconds:F0}s active={isActive} total={TotalDemoUsedSeconds:F1}s");
         }
 
         /// <summary>

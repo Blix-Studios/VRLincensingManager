@@ -22,6 +22,7 @@ namespace VRLicensing
         private const string FIRST_RUN_KEY = "vrl_init";
         private const string STORE_ENTITLEMENT_KEY = "vrl_store_entitlement"; // v1.12
         private const string DEMO_RESET_KEY = "vrl_demo_reset";                // v1.12.0-pre.7
+        private const string DEMO_LIMIT_KEY = "vrl_demo_limit";                // v1.12.0-pre.13: last server demo_limit_seconds
 
         private static byte[] GetEncryptionKey()
         {
@@ -131,6 +132,8 @@ namespace VRLicensing
             if (!string.IsNullOrEmpty(store)) payload += "|" + store;
             string reset = PlayerPrefs.GetString(DEMO_RESET_KEY, "");
             if (!string.IsNullOrEmpty(reset)) payload += "|" + reset;
+            string limit = PlayerPrefs.GetString(DEMO_LIMIT_KEY, "");
+            if (!string.IsNullOrEmpty(limit)) payload += "|" + limit;
 
             byte[] hmacKey = GetHMACKey();
             using (var hmac = new HMACSHA256(hmacKey))
@@ -194,6 +197,7 @@ namespace VRLicensing
             PlayerPrefs.DeleteKey(HKT_KEY);
             PlayerPrefs.DeleteKey(SESSION_USED_KEY);
             PlayerPrefs.DeleteKey(DEMO_RESET_KEY);
+            PlayerPrefs.DeleteKey(DEMO_LIMIT_KEY);
             PlayerPrefs.DeleteKey(INTEGRITY_SEAL_KEY);
             PlayerPrefs.DeleteKey(FIRST_RUN_KEY);
             PlayerPrefs.DeleteKey(STORE_ENTITLEMENT_KEY);
@@ -269,6 +273,39 @@ namespace VRLicensing
         {
             string encrypted = Encrypt(seconds.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
             PlayerPrefs.SetString(DEMO_USED_KEY, encrypted);
+            UpdateIntegritySeal();
+            PlayerPrefs.Save();
+        }
+
+        #endregion
+
+        #region Demo Limit Cache (Encrypted, v1.12.0-pre.13)
+
+        /// <summary>
+        /// The last <c>demo_limit_seconds</c> the server reported for this headset (0 if none or
+        /// unreadable). Used offline until the next status check; <see cref="LicenseConfig.demoDurationSeconds"/>
+        /// is only the fallback before the first answer (spec 10 §6).
+        /// </summary>
+        public static float GetDemoLimitSeconds()
+        {
+            try
+            {
+                string encrypted = PlayerPrefs.GetString(DEMO_LIMIT_KEY, "");
+                if (string.IsNullOrEmpty(encrypted)) return 0f;
+                string decrypted = Decrypt(encrypted);
+                return float.TryParse(decrypted, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out float val) && val > 0f ? val : 0f;
+            }
+            catch
+            {
+                return 0f;
+            }
+        }
+
+        public static void SetDemoLimitSeconds(float seconds)
+        {
+            string encrypted = Encrypt(Mathf.Max(0f, seconds).ToString("F0", System.Globalization.CultureInfo.InvariantCulture));
+            PlayerPrefs.SetString(DEMO_LIMIT_KEY, encrypted);
             UpdateIntegritySeal();
             PlayerPrefs.Save();
         }

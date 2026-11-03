@@ -8,7 +8,7 @@ Generic licensing and key registration module for VR simulators on Meta Quest. I
 ## Features
 
 - 🔑 **License key validation** against Supabase REST API
-- ⏱️ **Demo Mode** with configurable timer (default: 1 hour)
+- ⏱️ **Demo Mode** with a server-decided time per headset (`demo_limit_seconds`, set from `/admin`, default 15 min); the config value is only the offline fallback
 - 🔒 **Encrypted storage** (AES-256 with device-derived key + HMAC-SHA256 integrity seal)
 - 🕐 **Anti-clock tampering** (NTP-based clock rollback detection)
 - 📊 **Session time tracking** using `Time.unscaledTime`
@@ -59,7 +59,7 @@ This creates a `LicenseConfig` ScriptableObject. Fill in the following fields:
 | **Supabase Url** | Your Supabase project URL (e.g., `https://xxx.supabase.co`) |
 | **Anon Key** | Supabase public anon key |
 | **Product Id** | Product/simulator ID from the `products` table |
-| **Demo Duration Seconds** | Demo time in seconds (3600 = 1 hour) |
+| **Demo Duration Seconds** | Offline fallback only: demo seconds used until the server reports the headset's `demo_limit_seconds` (cached afterwards) |
 | **Max Offline Hours** | Maximum offline hours before requiring reconnection (72 = 3 days) |
 | **App Display Name** | Public-facing simulator name |
 

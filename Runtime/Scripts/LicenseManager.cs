@@ -62,6 +62,8 @@ namespace VRLicensing
         private Sprite cachedBrandingSprite;
         private LicenseUIBuilder uiBuilder;
         private float serverReportedDemo; // demo seconds the server already knows about (for additive delta)
+        private float serverDemoLimit;    // v1.12.0-pre.13: demo_limit_seconds the server reported this run (0 = not yet)
+        private bool demoBlockedByServer; // device_registry.demo_blocked from the last get_device_status
         private bool activatingFromCache; // true = re-activating a stored license at startup (vs fresh redemption)
         private int sessionCount;
         private float fpsAccumulator;
@@ -111,6 +113,16 @@ namespace VRLicensing
         /// Current state of the licensing system.
         /// </summary>
         public LicenseState CurrentState { get; private set; } = LicenseState.Unlicensed;
+
+        /// <summary>
+        /// v1.12.0-pre.13 (spec 10 §6): the demo length that applies to this headset — the
+        /// server's <c>demo_limit_seconds</c> when this run received it, otherwise the last cached
+        /// server value, otherwise <see cref="LicenseConfig.demoDurationSeconds"/> (offline fallback
+        /// before the first answer). Used by the demo start, the expiry checks, the welcome sign and the HUD.
+        /// </summary>
+        public float EffectiveDemoLimitSeconds => config == null
+            ? 0f
+            : DemoLimit.Resolve(serverDemoLimit, SecureLicenseStorage.GetDemoLimitSeconds(), config.demoDurationSeconds);
 
         /// <summary>True in both unlocked states: <see cref="LicenseState.Licensed"/> and <see cref="LicenseState.SubscribedViaStore"/>.</summary>
         public bool IsUnlocked => CurrentState == LicenseState.Licensed || CurrentState == LicenseState.SubscribedViaStore;
@@ -412,9 +424,11 @@ namespace VRLicensing
                 config.productId,
                 storeUserId, // null until the server verified a store account (phase B)
                 (status) => {
+                    AdoptServerDemoLimit(status); // also when found=false: the server's resolved default (spec 10 §4)
                     if (status != null && status.found)
                     {
                         serverDemoBlocked = status.demo_blocked;
+                        demoBlockedByServer = status.demo_blocked;
                         serverDemoUsed = status.demo_used_seconds;
                         serverReportedDemo = status.demo_used_seconds;
                         ApplyServerDemoReset(status);
@@ -454,7 +468,7 @@ namespace VRLicensing
             }
 
             float demoUsed = Mathf.Max(SecureLicenseStorage.GetDemoUsedSeconds(), serverDemoUsed);
-            if (demoUsed >= config.demoDurationSeconds)
+            if (demoUsed >= EffectiveDemoLimitSeconds)
             {
                 // Demo fully expired — must enter license key
                 Debug.Log("[VR Licensing] Demo expired. Awaiting license key.");
@@ -1122,7 +1136,7 @@ namespace VRLicensing
         public void StartDemoMode()
         {
             float demoUsed = SecureLicenseStorage.GetDemoUsedSeconds();
-            if (demoUsed >= config.demoDurationSeconds)
+            if (demoUsed >= EffectiveDemoLimitSeconds)
             {
                 Debug.Log("[VR Licensing] Cannot start demo — already expired.");
                 isLicenseExpiry = false;
@@ -1132,9 +1146,9 @@ namespace VRLicensing
                 return;
             }
 
-            Debug.Log($"[VR Licensing] Starting demo mode. Used: {demoUsed:F0}s / {config.demoDurationSeconds:F0}s");
+            Debug.Log($"[VR Licensing] Starting demo mode. Used: {demoUsed:F0}s / {EffectiveDemoLimitSeconds:F0}s");
             SetState(LicenseState.Demo);
-            demoManager.StartDemo(config.demoDurationSeconds);
+            demoManager.StartDemo(EffectiveDemoLimitSeconds);
             sessionTracker.StartTracking();
         }
 
@@ -1204,7 +1218,7 @@ namespace VRLicensing
                 {
                     Debug.Log("[VR Licensing] Plans closed — demo resumed.");
                     SetState(LicenseState.Demo, forceUpdate: true);     // modal hidden, HUD back
-                    demoManager.StartDemo(config.demoDurationSeconds); // re-checks the limit
+                    demoManager.StartDemo(EffectiveDemoLimitSeconds); // re-checks the limit
                 }
                 return;
             }
@@ -1346,7 +1360,7 @@ namespace VRLicensing
                 {
                     Debug.Log("[VR Licensing] Feedback closed — demo resumed.");
                     SetState(LicenseState.Demo, forceUpdate: true);
-                    demoManager.StartDemo(config.demoDurationSeconds);
+                    demoManager.StartDemo(EffectiveDemoLimitSeconds);
                 }
                 return;
             }
@@ -1530,6 +1544,45 @@ namespace VRLicensing
         }
 
         /// <summary>
+        /// v1.12.0-pre.13 (spec 10 §6) - the server decides the demo length per headset. Every
+        /// status / report answer carrying <c>demo_limit_seconds</c> (&gt; 0) becomes the effective
+        /// limit, is cached sealed for offline runs, and is pushed into the running demo: a lower
+        /// value already exceeded ends the demo on its next tick, a higher value extends it and
+        /// makes an expired demo available again.
+        /// </summary>
+        private void AdoptServerDemoLimit(DeviceStatus status)
+        {
+            if (status == null || status.demo_limit_seconds <= 0f) return;
+            float previous = EffectiveDemoLimitSeconds;
+            float next = status.demo_limit_seconds;
+
+            serverDemoLimit = next;
+            if (!Mathf.Approximately(SecureLicenseStorage.GetDemoLimitSeconds(), next))
+                SecureLicenseStorage.SetDemoLimitSeconds(next);
+            if (Mathf.Approximately(previous, next)) return;
+
+            Debug.Log($"[VR Licensing] Demo limit from server: {previous:F0}s -> {next:F0}s.");
+            if (demoManager != null) demoManager.SetLimit(next);
+            if (next > previous) ReopenDemoIfAvailable("demo limit raised");
+        }
+
+        /// <summary>
+        /// An expired DEMO (not a license or store expiry, not an admin block) whose used time is
+        /// now under the effective limit goes back to the welcome panel, where the user can start
+        /// it again. Used after a raised server limit and after a mid-run admin demo reset.
+        /// </summary>
+        private void ReopenDemoIfAvailable(string reason)
+        {
+            if (CurrentState != LicenseState.Expired || isLicenseExpiry || demoBlockedByServer) return;
+            float used = demoManager != null ? demoManager.TotalDemoUsedSeconds : SecureLicenseStorage.GetDemoUsedSeconds();
+            float limit = EffectiveDemoLimitSeconds;
+            if (DemoLimit.IsExpired(used, limit)) return;
+
+            Debug.Log($"[VR Licensing] Demo available again ({reason}): {used:F0}s of {limit:F0}s used.");
+            SetState(LicenseState.Unlicensed, forceUpdate: true);
+        }
+
+        /// <summary>
         /// v1.12.0-pre.7 - admin demo reset. The server only ever ADDS usage (contract section 2),
         /// so a reset from /admin/devices is signalled by a newer <c>demo_reset_at</c>: the first
         /// time a given date is seen, the server's (lower) total is adopted instead of being
@@ -1584,10 +1637,13 @@ namespace VRLicensing
                     {
                         serverReportedDemo = status.demo_used_seconds;
                         ActivePromo = (status.promo != null && status.promo.IsValid) ? status.promo : null;
-                        if (ApplyServerDemoReset(status)) localDemo = status.demo_used_seconds;
+                        bool reset = ApplyServerDemoReset(status);
+                        if (reset) localDemo = status.demo_used_seconds;
                         NoteDemoResetAt(status);
                         if (status.demo_used_seconds > localDemo)
                             SecureLicenseStorage.SetDemoUsedSeconds(status.demo_used_seconds);
+                        AdoptServerDemoLimit(status);                      // a raised limit reopens an expired demo
+                        if (reset) ReopenDemoIfAvailable("admin demo reset"); // same path for a reset received mid-run
                     }
                 },
                 (error) =>

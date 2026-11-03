@@ -3,6 +3,37 @@
 All notable changes to `com.blixstudios.vr-licensing`. Pre-release tags (`vX.Y.Z-pre.N`) are
 test builds for VirtualChainsaw; the final tag is cut only after QA on the headset.
 
+## 1.12.0-pre.13 — 2026-11-03 (tag `v1.12.0-pre.13`)
+
+Demo time decided by the server, per headset (spec `10-DEMO-TIME-CONTROL.md` §6; contract §1
+RPCs and the "Demo mode" bullet change — see the spec's contract note).
+
+- **Effective demo limit** = `demo_limit_seconds` from the last `get_device_status` /
+  `report_device_session` answer (> 0) → last cached server value → `LicenseConfig.demoDurationSeconds`
+  (offline first launch only). `LicenseManager.EffectiveDemoLimitSeconds` exposes it; the rules
+  live in the new pure `DemoLimit` class.
+- The limit is **cached sealed** in `SecureLicenseStorage` (`vrl_demo_limit`, next to the demo
+  seconds used; part of the integrity seal only when present, like the store entitlement and the
+  reset marker, so headsets updated from older builds are not flagged as tampered).
+- Used everywhere the config value was used: `StartDemoMode`, the startup and start expiry
+  checks, `DemoModeManager.StartDemo`, the welcome sign ("remaining of …") and, through the
+  manager's limit, the HUD countdown and its watchdog.
+- **Raised limit re-opens an expired demo**: an expired demo (not a license/store expiry, not an
+  admin block) whose used time is under the new limit returns to the welcome panel. A lowered
+  limit is pushed into the running demo (`DemoModeManager.SetLimit`) and ends it on the next tick
+  when already exceeded; at startup it is simply the new threshold.
+- The same re-open path now also applies to an **admin demo reset received mid-run** (before,
+  the stored total was lowered but the expired panel stayed until the next launch).
+- `get_device_status` with `found=false` is honoured too (the server returns the resolved default
+  for unregistered headsets).
+- `LicenseConfig.demoDurationSeconds` stays as the offline fallback; its tooltip and the setup
+  window label say so.
+- Tests (`DemoLimitTests`, 7): server limit wins, cache used offline, config used with no cache,
+  raise un-expires, lower expires, `DemoModeManager.SetLimit` end to end, sealed cache round trip.
+  36 edit-mode tests pass.
+- Old builds (pre.12 and earlier, including the published Chainsaw build) ignore the server value
+  and keep their config time. Chainsaw build 29 and Forklift build 5 must pin this tag.
+
 ## 1.12.0-pre.12 — 2026-10-30 (tag `v1.12.0-pre.12`)
 
 - **Dutch (`nl`)** added to every license-UI string table in `LicenseStrings` (device code, best

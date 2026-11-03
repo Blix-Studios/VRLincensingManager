@@ -237,9 +237,11 @@ namespace VRLicensing
                 var dm = manager.GetComponent<DemoModeManager>();
                 if (dm != null) used = dm.TotalDemoUsedSeconds;
             }
-            float remaining = Mathf.Max(0f, config.demoDurationSeconds - used);
+            // v1.12.0-pre.13: the limit is the server's per-headset value (cached), config only as fallback.
+            float limit = manager != null ? manager.EffectiveDemoLimitSeconds : config.demoDurationSeconds;
+            float remaining = Mathf.Max(0f, limit - used);
             welcomeInfoText.text =
-                $"Free demo: {FormatDuration(remaining)} remaining of {FormatDuration(config.demoDurationSeconds)}";
+                $"Free demo: {FormatDuration(remaining)} remaining of {FormatDuration(limit)}";
             welcomeInfoText.color = COLOR_TEXT_DIM;
             welcomeInfoText.fontStyle = FontStyles.Italic;
             if (welcomeSubscribeLabel != null)
