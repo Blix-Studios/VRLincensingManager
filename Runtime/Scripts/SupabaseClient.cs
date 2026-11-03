@@ -95,7 +95,7 @@ namespace VRLicensing
 
                 if (request.result != UnityWebRequest.Result.Success)
                 {
-                    onError?.Invoke("error", $"Connection error: {request.error}");
+                    onError?.Invoke("error", LicenseStrings.Format(LicenseStrings.Key.ConnectionError, null, request.error));
                     yield break;
                 }
 
@@ -106,7 +106,7 @@ namespace VRLicensing
                 }
                 catch (Exception e)
                 {
-                    onError?.Invoke("error", $"Error processing response: {e.Message}");
+                    onError?.Invoke("error", LicenseStrings.Format(LicenseStrings.Key.ResponseError, null, e.Message));
                     yield break;
                 }
 
@@ -119,7 +119,7 @@ namespace VRLicensing
                 else
                 {
                     string code = result?.code ?? "error";
-                    string msg = result?.error ?? "Invalid or inactive license key.";
+                    string msg = result?.error ?? LicenseStrings.Get(LicenseStrings.Key.InvalidKey);
                     Debug.LogWarning($"[VR Licensing] License rejected ({code}): {msg}");
                     onError?.Invoke(code, msg);
                 }

@@ -376,9 +376,7 @@ namespace VRLicensing
             {
                 // Only with LicenseConfig.enforceEntitlement = true (published store builds).
                 SetState(LicenseState.Unlicensed, forceUpdate: true);
-                uiBuilder?.ShowEntitlementBlocked(
-                    "This app is not available for the signed-in Meta account.\n" +
-                    "Please install it from the Meta Horizon Store with the account that owns it.");
+                uiBuilder?.ShowEntitlementBlocked(LicenseStrings.Get(LicenseStrings.Key.EntitlementBlocked));
                 StartCoroutine(QuitAfter(ENTITLEMENT_QUIT_DELAY));
                 yield break;
             }
@@ -635,7 +633,7 @@ namespace VRLicensing
             }
 
             Debug.LogWarning($"[VR Licensing] Store subscription could not be verified with the server: {verifyError}");
-            pendingNotice = "An internet connection is needed to verify your subscription.";
+            pendingNotice = LicenseStrings.Get(LicenseStrings.Key.InternetNeeded);
             onDone(false);
         }
 
@@ -706,17 +704,22 @@ namespace VRLicensing
         /// <summary>
         /// Opens the store checkout for one term of the subscription SKU, then asks the server
         /// to verify the subscription and unlocks. Result: (success, message). A dismissed
-        /// checkout is reported as (false, "Checkout cancelled.").
+        /// checkout is reported as (false, localized "Checkout cancelled.") with
+        /// <see cref="LastCheckoutCancelled"/> set, so the UI need not compare message text.
         /// </summary>
         public void SubscribeViaStore(string term, Action<bool, string> onResult)
         {
+            LastCheckoutCancelled = false;
             if (storeProvider == null || !storeProvider.IsInitialized)
             {
-                onResult?.Invoke(false, "The store is not available right now.");
+                onResult?.Invoke(false, LicenseStrings.Get(LicenseStrings.Key.StoreUnavailable));
                 return;
             }
             StartCoroutine(SubscribeViaStoreRoutine(term, onResult));
         }
+
+        /// <summary>True when the last <see cref="SubscribeViaStore"/> ended because the user dismissed the checkout.</summary>
+        public bool LastCheckoutCancelled { get; private set; }
 
         private IEnumerator SubscribeViaStoreRoutine(string term, Action<bool, string> onResult)
         {
@@ -731,7 +734,8 @@ namespace VRLicensing
             {
                 QueueStoreEvent("checkout_cancelled", term);
                 Debug.Log($"[VR Licensing] Store checkout cancelled ({checkoutSku}).");
-                onResult?.Invoke(false, "Checkout cancelled.");
+                LastCheckoutCancelled = true;
+                onResult?.Invoke(false, LicenseStrings.Get(LicenseStrings.Key.CheckoutCancelled));
                 yield break;
             }
 
@@ -739,7 +743,7 @@ namespace VRLicensing
             {
                 QueueStoreEvent("checkout_cancelled", term);
                 Debug.LogWarning($"[VR Licensing] Store checkout failed ({checkoutSku}): {checkout.error}");
-                onResult?.Invoke(false, "Checkout failed: " + checkout.error);
+                onResult?.Invoke(false, LicenseStrings.Format(LicenseStrings.Key.CheckoutFailed, null, checkout.error));
                 yield break;
             }
 
@@ -767,7 +771,7 @@ namespace VRLicensing
         {
             if (storeProvider == null || !storeProvider.IsInitialized)
             {
-                onResult?.Invoke(false, "The store is not available right now.");
+                onResult?.Invoke(false, LicenseStrings.Get(LicenseStrings.Key.StoreUnavailable));
                 yield break;
             }
 
@@ -777,7 +781,7 @@ namespace VRLicensing
             if (string.IsNullOrEmpty(userId) || string.IsNullOrEmpty(nonce))
             {
                 if (!silent) Debug.LogWarning($"[VR Licensing] Could not identify the store account: {identityError}");
-                onResult?.Invoke(false, "Could not identify your Meta account. Check your connection and try again.");
+                onResult?.Invoke(false, LicenseStrings.Get(LicenseStrings.Key.IdentifyFailed));
                 yield break;
             }
 
@@ -799,7 +803,7 @@ namespace VRLicensing
             if (verify == null)
             {
                 if (!silent) Debug.LogWarning($"[VR Licensing] Store verification failed: {verifyError}");
-                onResult?.Invoke(false, "Could not verify the subscription. Check your connection and try again.");
+                onResult?.Invoke(false, LicenseStrings.Get(LicenseStrings.Key.VerifyFailed));
                 yield break;
             }
 
@@ -809,7 +813,7 @@ namespace VRLicensing
             {
                 SecureLicenseStorage.ClearStoreEntitlement();
                 Debug.Log($"[VR Licensing] Server reports no active subscription for this account (status: {verify.status}).");
-                onResult?.Invoke(false, "No active subscription was found for this Meta account.");
+                onResult?.Invoke(false, LicenseStrings.Get(LicenseStrings.Key.NoSubscription));
                 yield break;
             }
 
@@ -859,7 +863,7 @@ namespace VRLicensing
 
             if (string.IsNullOrEmpty(licenseKey))
             {
-                onResult?.Invoke(false, "Please enter a license key.");
+                onResult?.Invoke(false, LicenseStrings.Get(LicenseStrings.Key.EnterKeyPrompt));
                 return;
             }
 
@@ -885,7 +889,7 @@ namespace VRLicensing
             if (validLicense == null)
             {
                 OnValidationError?.Invoke(errorMessage ?? "Unknown error");
-                onResult?.Invoke(false, errorMessage ?? "Error validating the license.");
+                onResult?.Invoke(false, errorMessage ?? LicenseStrings.Get(LicenseStrings.Key.ValidationError));
                 yield break;
             }
 
@@ -896,7 +900,7 @@ namespace VRLicensing
             {
                 string reason = validLicense.InvalidReason;
                 lastValidationCode = reason;
-                string msg = $"This license is not active ({reason}). Ask your organisation for a new key.";
+                string msg = LicenseStrings.Format(LicenseStrings.Key.LicenseNotActive, null, reason);
                 Debug.LogWarning($"[VR Licensing] Server returned a non-active license ({reason}) — rejected.");
                 OnValidationError?.Invoke(msg);
                 onResult?.Invoke(false, msg);
@@ -1507,7 +1511,7 @@ namespace VRLicensing
                         uiBuilder.ShowDemoExpired();
                     break;
                 case LicenseState.ClockTampered:
-                    uiBuilder.ShowError("System clock has been tampered with. Connect to the internet to verify.");
+                    uiBuilder.ShowError(LicenseStrings.Get(LicenseStrings.Key.ClockTampered));
                     uiBuilder.ShowWelcome();
                     break;
             }
@@ -1559,12 +1563,23 @@ namespace VRLicensing
             serverDemoLimit = next;
             if (!Mathf.Approximately(SecureLicenseStorage.GetDemoLimitSeconds(), next))
                 SecureLicenseStorage.SetDemoLimitSeconds(next);
-            if (Mathf.Approximately(previous, next)) return;
 
-            Debug.Log($"[VR Licensing] Demo limit from server: {previous:F0}s -> {next:F0}s.");
+            bool changed = !Mathf.Approximately(previous, next);
+            // v1.12.0-pre.14: logged on the first adoption of every run as well, so logcat always
+            // shows which limit the headset is running with (before, an unchanged value was silent).
+            if (changed || !demoLimitLogged)
+            {
+                demoLimitLogged = true;
+                Debug.Log(changed
+                    ? $"[VR Licensing] Demo limit from server: {previous:F0}s -> {next:F0}s."
+                    : $"[VR Licensing] Demo limit from server: {next:F0}s (unchanged).");
+            }
+            if (!changed) return;
+
             if (demoManager != null) demoManager.SetLimit(next);
             if (next > previous) ReopenDemoIfAvailable("demo limit raised");
         }
+        private bool demoLimitLogged; // "Demo limit from server" printed at least once this run
 
         /// <summary>
         /// An expired DEMO (not a license or store expiry, not an admin block) whose used time is

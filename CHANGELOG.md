@@ -3,6 +3,51 @@
 All notable changes to `com.blixstudios.vr-licensing`. Pre-release tags (`vX.Y.Z-pre.N`) are
 test builds for VirtualChainsaw; the final tag is cut only after QA on the headset.
 
+## 1.12.0-pre.14 — 2026-11-03 (tag `v1.12.0-pre.14`)
+
+The whole license UI follows the user's language (12 languages: en, es, fr, de, it, pt, ru, zh,
+hi, fi, sv, nl). Until pre.13 only the device code, the subscription column, feedback and the
+exit survey were localized; the buttons, titles, status lines and error messages were English.
+
+- **78 strings moved from code into `LicenseStrings`** (`LicenseStrings.Key.*`, `Get`, `Format`,
+  `ShortDuration`): welcome panel ("Start Free Demo", "Enter License Key", "Scan QR",
+  "Select an option to continue", "Free demo: {0} remaining of {1}" with localized min/h units),
+  key panel (title, hint, "Activate License", "Validating...", "Back"), demo-expired and
+  license-expired panels (titles, messages with the app name and the server reason, "Already
+  have a license key?", "Enter a license key"), the store column ("Unlock the full course",
+  "Loading plans…", "Billed through your Meta account…", checkout / verification status
+  lines, "Plans are not available right now…"), the success panel (subscription and key
+  variants), the QR scan HUD and every scanner status line, the direct-APK organisation hint and
+  purchase CTA (promo code, QR hints), the demo HUD ("Demo  ·  14:59 left"), and every message
+  `LicenseManager` / `SupabaseClient` hand to the UI (store unavailable, checkout cancelled /
+  failed, account / subscription verification failures, no subscription, entitlement blocked,
+  internet needed, license not active, clock tampered, connection / response errors, invalid
+  key). The English "¡Key redeemed successfully!" lost its stray "¡".
+- Dutch uses the informal "je" throughout (upm_nl_strings.md); German/French/Russian/Chinese/
+  Hindi keep the formal register of their existing rows. The welcome buttons reuse the app's
+  Dutch labels ("Probeer de demo", "Licentiecode invoeren").
+- **Layout kept**: every button label auto-sizes down (14→9 / 15→10) only if a language needs
+  it; the longest labels (Russian "Начать бесплатную демоверсию", German "Lizenzschlüssel
+  eingeben") fit at full size on the 400/260 px buttons. Multi-line messages (expired panels,
+  organisation hint, success subtitle, store status, scan subtitle) auto-size instead of
+  being cut with an ellipsis. The welcome info line is now two lines (520×36) so the offline
+  notice fits in German; when the entitlement check blocks the app the message takes the
+  middle of the panel. Plan buttons and the rating stars keep their fixed sizes.
+- **Language changes while a panel is open re-render it**: `LicenseStrings.LanguageOverride` is
+  now a property raising `LicenseStrings.LanguageChanged`; `LicenseUIBuilder` re-renders every
+  bound label, the device codes, the store texts and the HUD. Host code that assigns the field
+  compiles unchanged.
+- `LicenseManager.LastCheckoutCancelled` replaces the UI's comparison against the English
+  "Checkout cancelled." text.
+- **"Demo limit from server" is logged on the first adoption of every run** (`… 900s
+  (unchanged).`), not only when the value changes — logcat always shows the limit in force.
+- Still English by design: text the server sends (`validate_and_bind_license` error messages,
+  admin notices), status codes in parentheses (`revoked`), the key placeholder, prices, the
+  purchase URL, app and term names from the store.
+- Tests (`LicenseStringsCoverageTests`, 8): every key in every language, constants ⇄ rows,
+  placeholders match English, every row formats, Dutch informal, English/key fallback,
+  ShortDuration / welcome / HUD lines, LanguageChanged. 44 edit-mode tests pass.
+
 ## 1.12.0-pre.13 — 2026-11-03 (tag `v1.12.0-pre.13`)
 
 Demo time decided by the server, per headset (spec `10-DEMO-TIME-CONTROL.md` §6; contract §1

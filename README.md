@@ -15,6 +15,7 @@ Generic licensing and key registration module for VR simulators on Meta Quest. I
 - 📡 **Server-side device registry** — survives factory resets; prevents demo abuse
 - 🔌 **Auto-initialization** (`RuntimeInitializeOnLoadMethod`) — Plug & Play
 - ⚙️ **ScriptableObject configuration** — each simulator has its own config
+- 🌐 **Localized license UI** — every panel, button and message in 12 languages (en, es, fr, de, it, pt, ru, zh, hi, fi, sv, nl), following the host app's selector or the headset language
 
 ## Installation
 
@@ -141,7 +142,9 @@ answer time is stored and the question only returns after an admin demo reset
 with a line about company quotes — no URL, QR or price in store builds.
 
 To keep the license UI in the language your app shows, set `LicenseStrings.LanguageOverride`
-to the selected locale code whenever it changes (VirtualChainsaw: `LicenseLanguageSync`).
+to the selected locale code whenever it changes (VirtualChainsaw: `LicenseLanguageSync`). Since
+v1.12.0-pre.14 the whole UI is localized and an open panel re-renders on the change
+(`LicenseStrings.LanguageChanged`); `LicenseStrings.Get(LicenseStrings.Key.X)` gives any UI string.
 
 Unknown license statuses (e.g. `revoked`) deserialize without error and are treated as "not valid" with the server's message; an online re-validation that returns any verdict other than a connection error drops the cached license immediately.
 

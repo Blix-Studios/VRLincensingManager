@@ -113,6 +113,61 @@ namespace VRLicensing
             new System.Collections.Generic.List<TextMeshProUGUI>();
         private const float COLUMN_X = 225f;    // horizontal offset of each column from the panel centre
 
+        // v1.12.0-pre.14: every label whose text follows the UI language. Registered when the
+        // panels are built, re-rendered on every Show* and when LicenseStrings.LanguageOverride
+        // changes (the host's language selector may be used while the welcome panel is open).
+        private sealed class BoundText
+        {
+            public TMP_Text label;
+            public Func<string, string> text; // language code -> text
+        }
+        private readonly System.Collections.Generic.List<BoundText> boundTexts =
+            new System.Collections.Generic.List<BoundText>();
+
+        private TMP_Text Bind(TMP_Text label, string key) => Bind(label, lang => LicenseStrings.Get(key, lang));
+
+        private TMP_Text Bind(TMP_Text label, Func<string, string> text)
+        {
+            if (label == null) return null;
+            boundTexts.Add(new BoundText { label = label, text = text });
+            Apply(label, text);
+            return label;
+        }
+
+        private void BindButton(Button button, string key)
+        {
+            if (button != null) Bind(button.GetComponentInChildren<TextMeshProUGUI>(), key);
+        }
+
+        private void BindButton(GameObject button, string key)
+        {
+            if (button != null) Bind(button.GetComponentInChildren<TextMeshProUGUI>(), key);
+        }
+
+        private static void Apply(TMP_Text label, Func<string, string> text)
+        {
+            if (label == null) return;
+            label.text = Localized(label, text(LicenseStrings.CurrentLanguage), text("en"));
+        }
+
+        private void RefreshBoundTexts()
+        {
+            foreach (var b in boundTexts) Apply(b.label, b.text);
+        }
+
+        /// <summary>UI-table text in the current language; English when the label's font cannot draw it.</summary>
+        private static string L(TMP_Text label, string key)
+        {
+            return Localized(label, LicenseStrings.Get(key), LicenseStrings.Get(key, "en"));
+        }
+
+        private static string L(TMP_Text label, string key, params object[] args)
+        {
+            return Localized(label,
+                LicenseStrings.Format(key, LicenseStrings.CurrentLanguage, args),
+                LicenseStrings.Format(key, "en", args));
+        }
+
         /// <summary>Widgets of one "subscribe" column (demo-expired / license-expired panels).</summary>
         private sealed class StoreColumn
         {
@@ -230,7 +285,16 @@ namespace VRLicensing
             licenseExpiredPanel.SetActive(false);
             successPanel.SetActive(false);
             if (welcomeBtnContainer != null) welcomeBtnContainer.SetActive(true);
+            SetWelcomeInfoLayout(blocked: false);
+            RefreshBoundTexts();
+            RefreshWelcomeInfo();
+            RefreshDeviceCodes();
+        }
 
+        /// <summary>"Free demo: 14 min remaining of 15 min" in the UI language (v1.12.0-pre.14).</summary>
+        private void RefreshWelcomeInfo()
+        {
+            if (welcomeInfoText == null) return;
             float used = 0f;
             if (manager != null)
             {
@@ -240,16 +304,38 @@ namespace VRLicensing
             // v1.12.0-pre.13: the limit is the server's per-headset value (cached), config only as fallback.
             float limit = manager != null ? manager.EffectiveDemoLimitSeconds : config.demoDurationSeconds;
             float remaining = Mathf.Max(0f, limit - used);
-            welcomeInfoText.text =
-                $"Free demo: {FormatDuration(remaining)} remaining of {FormatDuration(limit)}";
+            string lang = LicenseStrings.CurrentLanguage;
+            welcomeInfoText.text = Localized(welcomeInfoText,
+                LicenseStrings.Format(LicenseStrings.Key.WelcomeDemoLine, lang,
+                    LicenseStrings.ShortDuration(remaining, lang), LicenseStrings.ShortDuration(limit, lang)),
+                LicenseStrings.Format(LicenseStrings.Key.WelcomeDemoLine, "en",
+                    LicenseStrings.ShortDuration(remaining, "en"), LicenseStrings.ShortDuration(limit, "en")));
             welcomeInfoText.color = COLOR_TEXT_DIM;
             welcomeInfoText.fontStyle = FontStyles.Italic;
-            if (welcomeSubscribeLabel != null)
+        }
+
+        /// <summary>
+        /// The welcome info line is two lines under the buttons; when the entitlement check blocks
+        /// the app the buttons are gone and the message takes the middle of the panel.
+        /// </summary>
+        private void SetWelcomeInfoLayout(bool blocked)
+        {
+            if (welcomeInfoText == null) return;
+            var rt = welcomeInfoText.rectTransform;
+            if (blocked)
             {
-                string sub = LicenseStrings.Subscribe();
-                welcomeSubscribeLabel.text = CanRender(welcomeSubscribeLabel, sub) ? sub : LicenseStrings.Subscribe("en");
+                rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f, 0.5f);
+                rt.sizeDelta = new Vector2(540, 160);
+                rt.anchoredPosition = new Vector2(0, -10);
+                welcomeInfoText.fontSize = 15;
             }
-            RefreshDeviceCodes();
+            else
+            {
+                rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f, 0f);
+                rt.sizeDelta = new Vector2(520, 36);
+                rt.anchoredPosition = new Vector2(0, 14);
+                welcomeInfoText.fontSize = 12;
+            }
         }
 
         /// <summary>Shows the Key Input panel for entering a license key.</summary>
@@ -264,6 +350,7 @@ namespace VRLicensing
             demoExpiredPanel.SetActive(false);
             licenseExpiredPanel.SetActive(false);
             successPanel.SetActive(false);
+            RefreshBoundTexts();
             statusText.text = "";
             statusText.color = COLOR_TEXT_DIM;
             ClearKeyField(keyField);
@@ -285,6 +372,7 @@ namespace VRLicensing
             demoExpiredPanel.SetActive(true);
             licenseExpiredPanel.SetActive(false);
             successPanel.SetActive(false);
+            RefreshBoundTexts();
             expiredStatusText.text = "";
             expiredStatusText.color = COLOR_TEXT_DIM;
             ClearKeyField(expiredKeyField);
@@ -325,9 +413,12 @@ namespace VRLicensing
             demoExpiredPanel.SetActive(false);
             licenseExpiredPanel.SetActive(true);
             successPanel.SetActive(false);
+            RefreshBoundTexts();
             licExpiredStatusText.text = "";
             licExpiredStatusText.color = COLOR_TEXT_DIM;
             ClearKeyField(licExpiredKeyField);
+            licExpiredStoreExpiry = storeExpiry;
+            licExpiredReason = reason;
             if (licExpMsgText != null) licExpMsgText.text = LicenseExpiredMessage(storeExpiry, reason);
             RefreshDeviceCodes();
             if (licStoreColumn != null)
@@ -337,22 +428,25 @@ namespace VRLicensing
             }
         }
 
+        private bool licExpiredStoreExpiry;   // last ShowLicenseExpired arguments, for a language change
+        private string licExpiredReason;
+
         private string LicenseExpiredMessage(bool storeExpiry, string reason)
         {
+            var label = licExpMsgText;
             string app = config.appDisplayName;
             if (storeExpiry)
-                return $"Your subscription to {app} has ended or needs to be verified again.\n" +
-                       "Choose a plan to continue, or enter a license key.";
+                return L(label, LicenseStrings.Key.StoreExpiredLine, app) + "\n" + L(label, LicenseStrings.Key.ChoosePlanOrKey);
 
             string what = string.IsNullOrEmpty(reason) || reason == "expired"
-                ? $"Your license for {app} has expired."
-                : $"Your license for {app} is no longer active ({reason}).";
+                ? L(label, LicenseStrings.Key.LicenseExpiredLine, app)
+                : L(label, LicenseStrings.Key.LicenseInactiveLine, app, reason);
 
             if (storeOffersEnabled)
-                return what + "\nChoose a plan to continue, or enter a new license key.";
+                return what + "\n" + L(label, LicenseStrings.Key.ChoosePlanOrNewKey);
             return config.showPurchaseCta
-                ? what + "\nRenew on the web portal or enter a new key."
-                : what + "\nAsk your organisation for a new key and enter it below.";
+                ? what + "\n" + L(label, LicenseStrings.Key.RenewOnWeb)
+                : what + "\n" + L(label, LicenseStrings.Key.AskOrgForKey);
         }
 
         /// <summary>
@@ -365,10 +459,10 @@ namespace VRLicensing
             if (plansPanel != null) plansPanel.SetActive(false);
             if (successAnimating) return;
 
-            string title = alreadyActive ? "Subscription active" : "Thank you for subscribing!";
-            string subtitle = alreadyActive
-                ? "Your Meta account has an active subscription.\nEverything's good — enjoy the simulator."
-                : "Your subscription is active.\nThe simulator will unlock automatically.";
+            string title = L(successTitleText, alreadyActive
+                ? LicenseStrings.Key.SubscriptionActiveTitle : LicenseStrings.Key.ThanksForSubscribing);
+            string subtitle = L(successSubtitleText, alreadyActive
+                ? LicenseStrings.Key.SubscriptionActiveBody : LicenseStrings.Key.SubscriptionNewBody);
 
             StartCoroutine(ShowSuccessAndHide(title, subtitle, alreadyActive ? 8f : 2.5f));
         }
@@ -399,6 +493,7 @@ namespace VRLicensing
         {
             ShowWelcome();
             if (welcomeBtnContainer != null) welcomeBtnContainer.SetActive(false);
+            SetWelcomeInfoLayout(blocked: true);
             if (welcomeInfoText != null)
             {
                 welcomeInfoText.text = message;
@@ -429,10 +524,10 @@ namespace VRLicensing
             if (plansPanel != null) plansPanel.SetActive(false);
             if (successAnimating) return;
 
-            string title = alreadyActive ? "License active" : "¡Key redeemed successfully!";
-            string subtitle = alreadyActive
-                ? "This device already has a valid license.\nEverything's good — enjoy the simulator."
-                : "Your license has been activated successfully.\nThe simulator will unlock automatically.";
+            string title = L(successTitleText, alreadyActive
+                ? LicenseStrings.Key.LicenseActiveTitle : LicenseStrings.Key.KeyRedeemedTitle);
+            string subtitle = L(successSubtitleText, alreadyActive
+                ? LicenseStrings.Key.LicenseActiveBody : LicenseStrings.Key.LicenseNewBody);
             float hold = alreadyActive ? 8f : 2.5f;
 
             StartCoroutine(ShowSuccessAndHide(title, subtitle, hold));
@@ -458,9 +553,10 @@ namespace VRLicensing
             }
         }
 
-        /// <summary>Shows a success message on the active panel.</summary>
-        public void ShowSuccess(string message = "License activated successfully")
+        /// <summary>Shows a success message on the active panel (default: "License activated successfully").</summary>
+        public void ShowSuccess(string message = null)
         {
+            if (message == null) message = LicenseStrings.Get(LicenseStrings.Key.LicenseActivated);
             if (keyInputPanel.activeSelf)
             {
                 statusText.text = message;
@@ -481,20 +577,21 @@ namespace VRLicensing
         /// <summary>Sets loading state on activate buttons.</summary>
         public void SetLoading(bool loading)
         {
+            string key = loading ? LicenseStrings.Key.Validating : LicenseStrings.Key.Activate;
             if (activateButton != null)
             {
                 activateButton.interactable = !loading;
-                activateButtonText.text = loading ? "Validating..." : "Activate License";
+                activateButtonText.text = L(activateButtonText, key);
             }
             if (expiredActivateButton != null)
             {
                 expiredActivateButton.interactable = !loading;
-                expiredActivateButtonText.text = loading ? "Validating..." : "Activate License";
+                expiredActivateButtonText.text = L(expiredActivateButtonText, key);
             }
             if (licExpiredActivateButton != null)
             {
                 licExpiredActivateButton.interactable = !loading;
-                licExpiredActivateButtonText.text = loading ? "Validating..." : "Activate License";
+                licExpiredActivateButtonText.text = L(licExpiredActivateButtonText, key);
             }
         }
 
@@ -548,29 +645,30 @@ namespace VRLicensing
             rt.sizeDelta = new Vector2(700, 300);
             rt.anchoredPosition = new Vector2(0, 40);
 
-            CreateTMPText("ScanTitle", rt,
-                "Look at the QR code",
+            Bind(CreateTMPText("ScanTitle", rt,
+                "",
                 26, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
-                size: new Vector2(680, 40), pos: new Vector2(0, -20));
+                size: new Vector2(680, 40), pos: new Vector2(0, -20)), LicenseStrings.Key.ScanTitle);
 
-            CreateTMPText("ScanSubtitle", rt,
-                "Hold it steady in front of you — or cancel and type the key manually.",
+            var scanSubtitle = Bind(CreateTMPText("ScanSubtitle", rt,
+                "",
                 15, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
-                size: new Vector2(680, 30), pos: new Vector2(0, -66));
+                size: new Vector2(680, 44), pos: new Vector2(0, -66)), LicenseStrings.Key.ScanSubtitle);
+            AutoSize(scanSubtitle, 15, 10);
 
-            CreatePositionedButton("ScanCancel", rt,
-                "Cancel", new Vector2(180, 40), new Vector2(0, 30),
+            BindButton(CreatePositionedButton("ScanCancel", rt,
+                "", new Vector2(180, 40), new Vector2(0, 30),
                 COLOR_ERROR, COLOR_ERROR, () =>
                 {
                     if (qrScanner != null && qrScanner.IsScanning)
                     {
                         qrScanner.StopScan();
-                        SetScanStatus("Scan cancelled.", COLOR_TEXT_DIM);
+                        SetScanStatus(LicenseStrings.Get(LicenseStrings.Key.ScanCancelled), COLOR_TEXT_DIM);
                     }
                 },
-                anchorAtBottom: true);
+                anchorAtBottom: true), LicenseStrings.Key.Cancel);
 
             viewfinderPanel.SetActive(false);
         }
@@ -695,11 +793,11 @@ namespace VRLicensing
                 stretch: true, padding: new Vector4(20, 20, 0, 0));
 
             // Subtitle
-            CreateTMPText("WelcomeSubtitle", panelRt,
-                "Select an option to continue",
+            Bind(CreateTMPText("WelcomeSubtitle", panelRt,
+                "",
                 14, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
-                size: new Vector2(500, 30), pos: new Vector2(0, -85));
+                size: new Vector2(500, 30), pos: new Vector2(0, -85)), LicenseStrings.Key.WelcomeSubtitle);
 
             // Buttons container
             welcomeBtnContainer = CreatePanel("BtnContainer", panelRt, Color.clear);
@@ -718,40 +816,43 @@ namespace VRLicensing
             vlg.childControlHeight = true;
 
             // Button 1: Start Demo (green)
-            CreateLayoutButton("StartDemoBtn", btnContRt,
-                "Start Free Demo", 45,
+            BindButton(CreateLayoutButton("StartDemoBtn", btnContRt,
+                "", 45,
                 COLOR_GREEN, COLOR_GREEN_HOVER,
-                OnStartDemoClicked);
+                OnStartDemoClicked), LicenseStrings.Key.StartDemo);
 
             // Button 1b (store builds, v1.12.0-pre.8): subscribe before the demo is even started.
             // Same plans column as the expired panels — Meta prices only, no URL/QR/promo.
             if (storeOffersEnabled)
             {
                 var sub = CreateLayoutButton("SubscribeBtn", btnContRt,
-                    LicenseStrings.Subscribe("en"), 45,
+                    "", 45,
                     COLOR_ACCENT, COLOR_ACCENT_HOVER,
                     OnSubscribeClicked);
-                welcomeSubscribeLabel = sub.GetComponentInChildren<TextMeshProUGUI>();
+                Bind(sub.GetComponentInChildren<TextMeshProUGUI>(), lang => LicenseStrings.Subscribe(lang));
                 btnContRt.sizeDelta = new Vector2(400, 220);
             }
 
             // Button 2: Enter License Key (blue accent)
-            CreateLayoutButton("EnterKeyBtn", btnContRt,
-                "Enter License Key", 45,
+            BindButton(CreateLayoutButton("EnterKeyBtn", btnContRt,
+                "", 45,
                 COLOR_ACCENT, COLOR_ACCENT_HOVER,
-                OnEnterKeyClicked);
+                OnEnterKeyClicked), LicenseStrings.Key.EnterKey);
 
             // Button 3: Scan QR (secondary) — captured so it can be hidden on unsupported headsets
-            scanButtons.Add(CreateLayoutButton("ScanQRBtn", btnContRt,
-                "Scan QR", 45,
+            var scanBtn = CreateLayoutButton("ScanQRBtn", btnContRt,
+                "", 45,
                 COLOR_SECONDARY, COLOR_SECONDARY_HOVER,
-                OnScanQRClicked));
+                OnScanQRClicked);
+            BindButton(scanBtn, LicenseStrings.Key.ScanQr);
+            scanButtons.Add(scanBtn);
 
-            // Info text
+            // Info text: two lines under the buttons (the offline notice is long in German).
             welcomeInfoText = CreateTMPText("WelcomeInfo", panelRt,
                 "", 12, FontStyles.Italic, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 0f), pivot: new Vector2(0.5f, 0f),
-                size: new Vector2(400, 25), pos: new Vector2(0, 20));
+                size: new Vector2(520, 36), pos: new Vector2(0, 14));
+            AutoSize(welcomeInfoText, 12, 9);
 
             CreateDeviceCodeFooter(panelRt);
         }
@@ -778,26 +879,28 @@ namespace VRLicensing
             headerRt.sizeDelta = new Vector2(0, 60);
             headerRt.anchoredPosition = Vector2.zero;
 
-            CreateTMPText("KeyTitle", headerRt,
-                "Enter License Key",
+            Bind(CreateTMPText("KeyTitle", headerRt,
+                "",
                 20, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
-                stretch: true, padding: new Vector4(20, 20, 0, 0));
+                stretch: true, padding: new Vector4(20, 20, 0, 0)), LicenseStrings.Key.EnterKey);
 
             // Subtitle
-            CreateTMPText("KeySubtitle", panelRt,
-                "Enter your license key (format XXXX-XXXX-XXXX-XXXX)",
+            var keyHint = Bind(CreateTMPText("KeySubtitle", panelRt,
+                "",
                 13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
-                size: new Vector2(550, 25), pos: new Vector2(0, -72));
+                size: new Vector2(550, 25), pos: new Vector2(0, -72)), LicenseStrings.Key.KeyHint);
+            AutoSize(keyHint, 13, 10);
 
             // Key fields
             keyField = BuildKeyField("KeyField", panelRt, new Vector2(0, 15));
 
             // Activate button
             activateButton = CreatePositionedButton("ActivateBtn", panelRt,
-                "Activate License", new Vector2(260, 42), new Vector2(0, -40),
+                "", new Vector2(260, 42), new Vector2(0, -40),
                 COLOR_ACCENT, COLOR_ACCENT_HOVER, OnActivateClicked);
             activateButtonText = activateButton.GetComponentInChildren<TextMeshProUGUI>();
+            Bind(activateButtonText, LicenseStrings.Key.Activate);
 
             // Status text
             statusText = CreateTMPText("KeyStatusText", panelRt,
@@ -806,10 +909,11 @@ namespace VRLicensing
                 size: new Vector2(500, 25), pos: new Vector2(0, 50));
 
             // Back button
-            CreatePositionedButton("BackBtn", panelRt,
-                "Back", new Vector2(120, 35), new Vector2(0, 15),
+            var backBtn = CreatePositionedButton("BackBtn", panelRt,
+                "", new Vector2(120, 35), new Vector2(0, 15),
                 COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnBackClicked,
                 anchorAtBottom: true);
+            Bind(backBtn.GetComponentInChildren<TextMeshProUGUI>(), lang => LicenseStrings.Back(lang));
 
             CreateDeviceCodeFooter(panelRt);
 
@@ -842,17 +946,19 @@ namespace VRLicensing
             headerRt.sizeDelta = new Vector2(0, 60);
             headerRt.anchoredPosition = Vector2.zero;
 
-            CreateTMPText("ExpTitle", headerRt,
-                "Demo Expired",
+            Bind(CreateTMPText("ExpTitle", headerRt,
+                "",
                 20, FontStyles.Bold, COLOR_ERROR, TextAlignmentOptions.Center,
-                stretch: true, padding: new Vector4(20, 20, 0, 0));
+                stretch: true, padding: new Vector4(20, 20, 0, 0)), LicenseStrings.Key.DemoExpiredTitle);
 
             // Message
-            CreateTMPText("ExpMsg", panelRt,
-                $"Your free trial of {config.appDisplayName} has ended.",
+            string appName = config.appDisplayName;
+            Bind(CreateTMPText("ExpMsg", panelRt,
+                "",
                 14, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
-                size: new Vector2(820, 30), pos: new Vector2(0, -74));
+                size: new Vector2(820, 30), pos: new Vector2(0, -74)),
+                lang => LicenseStrings.Format(LicenseStrings.Key.DemoExpiredLine, lang, appName));
 
             // Everything below the message lives in a body container so the exit survey
             // (v1.12.0-pre.9) can take its place for one question before the columns show.
@@ -877,23 +983,26 @@ namespace VRLicensing
             // column has nothing to offer (no SKUs yet, store unavailable…).
             expKeyColumn = CreateColumn("ExpKeyColumn", bodyRt, COLUMN_X);
 
-            CreateTMPText("ExpRedeemTitle", expKeyColumn,
-                "Already have a license key?",
+            Bind(CreateTMPText("ExpRedeemTitle", expKeyColumn,
+                "",
                 16, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
-                size: new Vector2(410, 26), pos: new Vector2(0, 85));
+                size: new Vector2(410, 26), pos: new Vector2(0, 85)), LicenseStrings.Key.HaveKeyTitle);
 
             expiredKeyField = BuildKeyField("ExpKeyField", expKeyColumn, new Vector2(0, 25), width: 400f);
 
             expiredActivateButton = CreatePositionedButton("ExpActivateBtn", expKeyColumn,
-                "Activate License", new Vector2(260, 42), new Vector2(0, -40),
+                "", new Vector2(260, 42), new Vector2(0, -40),
                 COLOR_ACCENT, COLOR_ACCENT_HOVER, OnExpiredActivateClicked);
             expiredActivateButtonText = expiredActivateButton.GetComponentInChildren<TextMeshProUGUI>();
+            Bind(expiredActivateButtonText, LicenseStrings.Key.Activate);
 
             // Scan QR button — captured so it can be hidden on unsupported headsets
-            scanButtons.Add(CreatePositionedButton("ExpScanQR", expKeyColumn,
-                "Scan QR", new Vector2(260, 35), new Vector2(0, -95),
-                COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnScanQRClicked).gameObject);
+            var expScan = CreatePositionedButton("ExpScanQR", expKeyColumn,
+                "", new Vector2(260, 35), new Vector2(0, -95),
+                COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnScanQRClicked);
+            BindButton(expScan, LicenseStrings.Key.ScanQr);
+            scanButtons.Add(expScan.gameObject);
 
             expiredStatusText = CreateTMPText("ExpStatusText", expKeyColumn,
                 "", 13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
@@ -1074,7 +1183,8 @@ namespace VRLicensing
             {
                 int value = i;
                 var star = CreatePositionedButton("FbStar" + i, panelRt, i.ToString(), new Vector2(48, 48),
-                    new Vector2(-124 + (i - 1) * 62, 100), COLOR_SECONDARY, COLOR_SECONDARY_HOVER, () => OnFeedbackRating(value));
+                    new Vector2(-124 + (i - 1) * 62, 100), COLOR_SECONDARY, COLOR_SECONDARY_HOVER, () => OnFeedbackRating(value),
+                    fitLabel: false);
                 var label = star.GetComponentInChildren<TextMeshProUGUI>();
                 label.fontSize = 20;
                 fbStars.Add(star);
@@ -1125,6 +1235,7 @@ namespace VRLicensing
             if (plansPanel != null) plansPanel.SetActive(false);
             feedbackPanel.SetActive(true);
             if (fromDemo) HideDemoTimer();
+            RefreshBoundTexts();
 
             if (fbAutoClose != null) { StopCoroutine(fbAutoClose); fbAutoClose = null; }
             fbRating = 0;
@@ -1285,8 +1396,6 @@ namespace VRLicensing
         private GameObject plansPanel;
         private StoreColumn plansStoreColumn;
         private TextMeshProUGUI plansHint;
-        private TextMeshProUGUI plansBackLabel;
-        private TextMeshProUGUI welcomeSubscribeLabel;
 
         private void BuildPlansPanel()
         {
@@ -1324,10 +1433,10 @@ namespace VRLicensing
                 size: new Vector2(480, 40), pos: new Vector2(0, -10));
 
             var back = CreatePositionedButton("PlansBack", panelRt,
-                LicenseStrings.Back("en"), new Vector2(200, 38), new Vector2(0, 30),
+                "", new Vector2(200, 38), new Vector2(0, 30),
                 COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnPlansBackClicked,
                 anchorAtBottom: true);
-            plansBackLabel = back.GetComponentInChildren<TextMeshProUGUI>();
+            Bind(back.GetComponentInChildren<TextMeshProUGUI>(), lang => LicenseStrings.Back(lang));
 
             CreateDeviceCodeFooter(panelRt);
 
@@ -1353,11 +1462,7 @@ namespace VRLicensing
             if (fromDemo) HideDemoTimer();
 
             if (plansHint != null) plansHint.text = "";
-            if (plansBackLabel != null)
-            {
-                string back = LicenseStrings.Back();
-                plansBackLabel.text = CanRender(plansBackLabel, back) ? back : LicenseStrings.Back("en");
-            }
+            RefreshBoundTexts();
             RefreshDeviceCodes();
             StartPopulate(plansStoreColumn, null, null);
         }
@@ -1397,10 +1502,11 @@ namespace VRLicensing
             col.root = col.rt.gameObject;
 
             col.title = CreateTMPText(prefix + "Title", col.rt,
-                "Unlock the full course",
+                "",
                 16, FontStyles.Bold, COLOR_GREEN, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
                 size: new Vector2(410, 26), pos: new Vector2(0, 92));
+            Bind(col.title, LicenseStrings.Key.UnlockTitle);
 
             col.benefits = CreateTMPText(prefix + "Benefits", col.rt,
                 "",
@@ -1416,7 +1522,8 @@ namespace VRLicensing
                 var tb = new StoreTermButton { term = term };
                 tb.button = CreatePositionedButton(prefix + "Plan_" + term, col.rt,
                     term, new Vector2(320, 42), new Vector2(0, y),
-                    COLOR_ACCENT, COLOR_ACCENT_HOVER, () => OnStoreBuyClicked(col, captured));
+                    COLOR_ACCENT, COLOR_ACCENT_HOVER, () => OnStoreBuyClicked(col, captured),
+                    fitLabel: false); // two explicit lines with a <size> tag — verified layout, no auto-size
                 tb.label = tb.button.GetComponentInChildren<TextMeshProUGUI>();
 
                 if (term == "ANNUAL")
@@ -1449,6 +1556,7 @@ namespace VRLicensing
                 "", 12, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
                 size: new Vector2(410, 44), pos: new Vector2(0, Mathf.Min(-130f, y - 8f)));
+            AutoSize(col.status, 12, 9);
 
             RefreshStoreTexts(col);
             return col;
@@ -1526,7 +1634,7 @@ namespace VRLicensing
         {
             if (!col.collapsed) ExpandStoreColumn(col, divider, keyColumn);
             SetStoreButtons(col, interactable: false, hideAll: true);
-            SetStoreStatus(col, "Loading plans…", COLOR_TEXT_DIM);
+            SetStoreStatus(col, L(col.status, LicenseStrings.Key.LoadingPlans), COLOR_TEXT_DIM);
             RefreshStoreTexts(col);
 
             if (manager == null)
@@ -1542,13 +1650,13 @@ namespace VRLicensing
             if (result.existingSubscription != null)
             {
                 ExpandStoreColumn(col, divider, keyColumn);
-                SetStoreStatus(col, "An active subscription was found on this Meta account. Verifying…", COLOR_TEXT_DIM);
+                SetStoreStatus(col, L(col.status, LicenseStrings.Key.SubscriptionFoundVerifying), COLOR_TEXT_DIM);
                 manager.VerifyStoreSubscription((ok, err) =>
                 {
                     if (col.root == null) return;
                     if (ok)
                     {
-                        ShowSuccess("Subscription verified");
+                        ShowSuccess(LicenseStrings.Get(LicenseStrings.Key.SubscriptionVerified));
                         ShowSubscribed(false);
                     }
                     else SetStoreStatus(col, err, COLOR_ERROR);
@@ -1599,7 +1707,7 @@ namespace VRLicensing
             }
 
             ExpandStoreColumn(col, divider, keyColumn);
-            SetStoreStatus(col, "Billed through your Meta account. Manage or cancel anytime in your Meta settings.", COLOR_TEXT_DIM);
+            SetStoreStatus(col, L(col.status, LicenseStrings.Key.BillingNote), COLOR_TEXT_DIM);
         }
 
         private static string DescribeTerms(StoreProductInfo product)
@@ -1615,7 +1723,7 @@ namespace VRLicensing
             if (string.IsNullOrEmpty(term) || manager == null) return;
 
             SetStoreButtons(col, interactable: false, hideAll: false);
-            SetStoreStatus(col, "Opening Meta checkout…", COLOR_TEXT_DIM);
+            SetStoreStatus(col, L(col.status, LicenseStrings.Key.OpeningCheckout), COLOR_TEXT_DIM);
 
             manager.SubscribeViaStore(term, (ok, message) =>
             {
@@ -1623,12 +1731,12 @@ namespace VRLicensing
                 SetStoreButtons(col, interactable: true, hideAll: false);
                 if (ok)
                 {
-                    ShowSuccess("Subscription activated");
+                    ShowSuccess(LicenseStrings.Get(LicenseStrings.Key.SubscriptionActivated));
                     ShowSubscribed(false);
                 }
                 else
                 {
-                    bool cancelled = message == "Checkout cancelled.";
+                    bool cancelled = manager.LastCheckoutCancelled;
                     SetStoreStatus(col, message, cancelled ? COLOR_TEXT_DIM : COLOR_ERROR);
                 }
             });
@@ -1639,7 +1747,7 @@ namespace VRLicensing
             if (!col.collapsed)
                 Debug.Log($"[VR Licensing] Store plans hidden — {reason}. Showing the license-key column only.");
             if (col == plansStoreColumn && plansHint != null)
-                plansHint.text = "Plans are not available right now. Please try again later.";
+                plansHint.text = L(plansHint, LicenseStrings.Key.PlansUnavailable);
             col.collapsed = true;
             col.root.SetActive(false);
             if (divider != null) divider.SetActive(false);
@@ -1773,25 +1881,24 @@ namespace VRLicensing
         /// </summary>
         private void BuildOrganisationKeyHint(RectTransform panelRt, float columnX)
         {
-            CreateTMPText("ExpOrgTitle", panelRt,
-                "Continue your training",
+            Bind(CreateTMPText("ExpOrgTitle", panelRt,
+                "",
                 16, FontStyles.Bold, COLOR_GREEN, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
-                size: new Vector2(410, 26), pos: new Vector2(columnX, 85));
+                size: new Vector2(410, 26), pos: new Vector2(columnX, 85)), LicenseStrings.Key.OrgTitle);
 
-            CreateTMPText("ExpOrgBody", panelRt,
-                "The full course is licensed to companies and training centres.\n\n" +
-                "Ask your employer or training centre for a license key, then enter it " +
-                "on the right or scan its QR code.",
+            var orgBody = Bind(CreateTMPText("ExpOrgBody", panelRt,
+                "",
                 14, FontStyles.Normal, COLOR_TEXT, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
-                size: new Vector2(380, 180), pos: new Vector2(columnX, -30));
+                size: new Vector2(380, 180), pos: new Vector2(columnX, -30)), LicenseStrings.Key.OrgBody);
+            AutoSize(orgBody, 14, 10);
         }
 
         private void BuildPurchaseCta(RectTransform panelRt, float columnX)
         {
             expBuyTitle = CreateTMPText("ExpBuyTitle", panelRt,
-                "Get the full version",
+                "",
                 16, FontStyles.Bold, COLOR_GREEN, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
                 size: new Vector2(410, 26), pos: new Vector2(columnX, 96));
@@ -1861,22 +1968,23 @@ namespace VRLicensing
             string payload;
             if (promo != null)
             {
-                expBuyTitle.text = string.IsNullOrWhiteSpace(promo.headline) ? "Special offer" : promo.headline.ToUpperInvariant();
+                expBuyTitle.text = string.IsNullOrWhiteSpace(promo.headline)
+                    ? L(expBuyTitle, LicenseStrings.Key.SpecialOffer) : promo.headline.ToUpperInvariant();
                 expBuyTitle.color = COLOR_GREEN;
                 expBuyDetail.text = (string.IsNullOrWhiteSpace(promo.detail) ? "" : promo.detail + "\n")
-                                  + "Use code  <b>" + promo.code + "</b>";
+                                  + L(expBuyDetail, LicenseStrings.Key.UseCode, promo.code);
                 expBuyDetail.gameObject.SetActive(true);
                 payload = promo.url;
-                expBuyHint.text = "Scan with your phone — the discount is applied automatically.";
+                expBuyHint.text = L(expBuyHint, LicenseStrings.Key.ScanPhonePromo);
             }
             else
             {
-                expBuyTitle.text = "Get the full version";
+                expBuyTitle.text = L(expBuyTitle, LicenseStrings.Key.BuyTitle);
                 expBuyTitle.color = COLOR_GREEN;
                 expBuyDetail.text = "";
                 expBuyDetail.gameObject.SetActive(false);
                 payload = BasePurchaseUrl;
-                expBuyHint.text = "Scan with your phone, or visit the address above.";
+                expBuyHint.text = L(expBuyHint, LicenseStrings.Key.ScanPhoneOrVisit);
             }
 
             // Human-readable address: strip the scheme, keep the promo query visible.
@@ -1890,7 +1998,7 @@ namespace VRLicensing
             bool hasQr = purchaseQrTexture != null;
             expQrImage.texture = purchaseQrTexture;
             expQrFrame.SetActive(hasQr);
-            if (!hasQr) expBuyHint.text = "Visit the address above to purchase a license.";
+            if (!hasQr) expBuyHint.text = L(expBuyHint, LicenseStrings.Key.VisitToPurchase);
         }
 
         /// <summary>
@@ -1965,17 +2073,19 @@ namespace VRLicensing
             headerRt.sizeDelta = new Vector2(0, 60);
             headerRt.anchoredPosition = Vector2.zero;
 
-            CreateTMPText("LicExpTitle", headerRt,
-                "License Expired",
+            Bind(CreateTMPText("LicExpTitle", headerRt,
+                "",
                 20, FontStyles.Bold, new Color(1f, 0.65f, 0.15f, 1f), TextAlignmentOptions.Center,
-                stretch: true, padding: new Vector4(20, 20, 0, 0));
+                stretch: true, padding: new Vector4(20, 20, 0, 0)), LicenseStrings.Key.LicenseExpiredTitle);
 
             // Message (rewritten at show time with the actual reason: expired / revoked / store)
             licExpMsgText = CreateTMPText("LicExpMsg", panelRt,
-                LicenseExpiredMessage(false, null),
+                "",
                 13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
                 size: new Vector2(twoColumns ? 820 : 550, 45), pos: new Vector2(0, -72));
+            AutoSize(licExpMsgText, 13, 9);
+            licExpMsgText.text = LicenseExpiredMessage(false, null);
 
             if (twoColumns)
             {
@@ -1984,22 +2094,25 @@ namespace VRLicensing
 
                 licExpKeyColumn = CreateColumn("LicExpKeyColumn", panelRt, COLUMN_X);
 
-                CreateTMPText("LicExpRedeemTitle", licExpKeyColumn,
-                    "Enter a license key",
+                Bind(CreateTMPText("LicExpRedeemTitle", licExpKeyColumn,
+                    "",
                     16, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
                     anchor: new Vector2(0.5f, 0.5f), pivot: new Vector2(0.5f, 0.5f),
-                    size: new Vector2(410, 26), pos: new Vector2(0, 85));
+                    size: new Vector2(410, 26), pos: new Vector2(0, 85)), LicenseStrings.Key.EnterKeyTitle);
 
                 licExpiredKeyField = BuildKeyField("LicExpKeyField", licExpKeyColumn, new Vector2(0, 25), width: 400f);
 
                 licExpiredActivateButton = CreatePositionedButton("LicExpActivateBtn", licExpKeyColumn,
-                    "Activate License", new Vector2(260, 42), new Vector2(0, -40),
+                    "", new Vector2(260, 42), new Vector2(0, -40),
                     COLOR_ACCENT, COLOR_ACCENT_HOVER, OnLicExpiredActivateClicked);
                 licExpiredActivateButtonText = licExpiredActivateButton.GetComponentInChildren<TextMeshProUGUI>();
+                Bind(licExpiredActivateButtonText, LicenseStrings.Key.Activate);
 
-                scanButtons.Add(CreatePositionedButton("LicExpScanQR", licExpKeyColumn,
-                    "Scan QR", new Vector2(260, 35), new Vector2(0, -95),
-                    COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnScanQRClicked).gameObject);
+                var licScan = CreatePositionedButton("LicExpScanQR", licExpKeyColumn,
+                    "", new Vector2(260, 35), new Vector2(0, -95),
+                    COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnScanQRClicked);
+                BindButton(licScan, LicenseStrings.Key.ScanQr);
+                scanButtons.Add(licScan.gameObject);
 
                 licExpiredStatusText = CreateTMPText("LicExpStatusText", licExpKeyColumn,
                     "", 13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
@@ -2013,9 +2126,10 @@ namespace VRLicensing
 
                 // Activate button
                 licExpiredActivateButton = CreatePositionedButton("LicExpActivateBtn", panelRt,
-                    "Activate License", new Vector2(260, 42), new Vector2(0, -45),
+                    "", new Vector2(260, 42), new Vector2(0, -45),
                     COLOR_ACCENT, COLOR_ACCENT_HOVER, OnLicExpiredActivateClicked);
                 licExpiredActivateButtonText = licExpiredActivateButton.GetComponentInChildren<TextMeshProUGUI>();
+                Bind(licExpiredActivateButtonText, LicenseStrings.Key.Activate);
 
                 // Status
                 licExpiredStatusText = CreateTMPText("LicExpStatusText", panelRt,
@@ -2024,10 +2138,12 @@ namespace VRLicensing
                     size: new Vector2(500, 25), pos: new Vector2(0, 55));
 
                 // Scan QR button — captured so it can be hidden on unsupported headsets
-                scanButtons.Add(CreatePositionedButton("LicExpScanQR", panelRt,
-                    "Scan QR", new Vector2(260, 35), new Vector2(0, 18),
+                var licScan = CreatePositionedButton("LicExpScanQR", panelRt,
+                    "", new Vector2(260, 35), new Vector2(0, 18),
                     COLOR_SECONDARY, COLOR_SECONDARY_HOVER, OnScanQRClicked,
-                    anchorAtBottom: true).gameObject);
+                    anchorAtBottom: true);
+                BindButton(licScan, LicenseStrings.Key.ScanQr);
+                scanButtons.Add(licScan.gameObject);
             }
 
             CreateDeviceCodeFooter(panelRt);
@@ -2087,18 +2203,21 @@ namespace VRLicensing
                 stretch: true, padding: new Vector4(10, 10, 10, 10));
 
             // ── Title text ──
+            // Texts are set per call in ShowLicensed / ShowSubscribed (v1.12.0-pre.14: localized).
             successTitleText = CreateTMPText("SuccessTitle", successContentRt,
-                "\u00a1Key redeemed successfully!",
+                "",
                 26, FontStyles.Bold, COLOR_SUCCESS, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
                 size: new Vector2(480, 40), pos: new Vector2(0, -135));
+            AutoSize(successTitleText, 26, 16);
 
             // ── Subtitle text ──
             successSubtitleText = CreateTMPText("SuccessSubtitle", successContentRt,
-                "Your license has been activated successfully.\nThe simulator will unlock automatically.",
+                "",
                 14, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
                 size: new Vector2(420, 50), pos: new Vector2(0, -182));
+            AutoSize(successSubtitleText, 14, 10);
 
             // ── Decorative glow bar ──
             var glowBar = new GameObject("GlowBar");
@@ -2141,7 +2260,7 @@ namespace VRLicensing
             if (qrScanner != null && qrScanner.IsScanning)
             {
                 qrScanner.StopScan();
-                SetScanStatus("Scan cancelled.", COLOR_TEXT_DIM);
+                SetScanStatus(LicenseStrings.Get(LicenseStrings.Key.ScanCancelled), COLOR_TEXT_DIM);
                 return;
             }
 
@@ -2150,7 +2269,7 @@ namespace VRLicensing
 
             // The in-panel viewfinder (SyncViewfinder) gives the user the camera feed to
             // aim with — no passthrough involved.
-            SetScanStatus("Starting camera...", COLOR_TEXT_DIM);
+            SetScanStatus(LicenseStrings.Get(LicenseStrings.Key.StartingCamera), COLOR_TEXT_DIM);
 
             qrScanner.StartScan(30f,
                 onDecoded: OnQRDecoded,
@@ -2162,13 +2281,13 @@ namespace VRLicensing
                     Debug.LogWarning("[VR Licensing] QR scan unsupported: " + msg);
                     qrSupported = false;
                     HideScanButtons(); // this headset can't scan — remove the option entirely
-                    SetScanStatus(msg + " Enter your key manually.", COLOR_ERROR);
+                    SetScanStatus(msg + " " + LicenseStrings.Get(LicenseStrings.Key.EnterKeyManually), COLOR_ERROR);
                 });
         }
 
         private void OnQRDecoded(string key)
         {
-            SetScanStatus("QR detected — validating...", COLOR_SUCCESS);
+            SetScanStatus(LicenseStrings.Get(LicenseStrings.Key.QrDetected), COLOR_SUCCESS);
 
             // Mirror the key into the visible fields (if a key-entry panel is open) for feedback.
             if (keyInputPanel.activeSelf) FillKeyField(keyField, key);
@@ -2225,7 +2344,7 @@ namespace VRLicensing
         {
             if (string.IsNullOrEmpty(key) || key.Replace("-", "").Length < 16)
             {
-                ShowError("Enter the full key (XXXX-XXXX-XXXX-XXXX)");
+                ShowError(LicenseStrings.Get(LicenseStrings.Key.EnterFullKey));
                 return;
             }
 
@@ -2244,7 +2363,7 @@ namespace VRLicensing
                 }
                 else
                 {
-                    ShowError(error ?? "Error validating the license.");
+                    ShowError(error ?? LicenseStrings.Get(LicenseStrings.Key.ValidationError));
                 }
             });
         }
@@ -2636,10 +2755,22 @@ namespace VRLicensing
             return tmp;
         }
 
+        /// <summary>
+        /// Lets a label shrink (never grow) when a language needs more room than the design size
+        /// allows, instead of being cut with an ellipsis.
+        /// </summary>
+        private static void AutoSize(TMP_Text label, float max, float min)
+        {
+            if (label == null) return;
+            label.enableAutoSizing = true;
+            label.fontSizeMax = max;
+            label.fontSizeMin = min;
+        }
+
         private Button CreatePositionedButton(string name, RectTransform parent,
             string label, Vector2 size, Vector2 pos,
             Color normal, Color hover, UnityEngine.Events.UnityAction onClick,
-            bool anchorAtBottom = false)
+            bool anchorAtBottom = false, bool fitLabel = true)
         {
             var go = new GameObject(name);
             go.transform.SetParent(parent, false);
@@ -2678,6 +2809,7 @@ namespace VRLicensing
                 label, 14, FontStyles.Bold, Color.white, TextAlignmentOptions.Center,
                 stretch: true, padding: new Vector4(10, 10, 5, 5));
             labelTMP.raycastTarget = false;
+            if (fitLabel) AutoSize(labelTMP, 14, 9); // v1.12.0-pre.14: localized labels never clip
 
             return btn;
         }
@@ -2712,6 +2844,7 @@ namespace VRLicensing
                 label, 15, FontStyles.Bold, Color.white, TextAlignmentOptions.Center,
                 stretch: true, padding: new Vector4(15, 15, 5, 5));
             labelTMP.raycastTarget = false;
+            AutoSize(labelTMP, 15, 10); // v1.12.0-pre.14: localized labels never clip
 
             return go;
         }
@@ -2821,8 +2954,10 @@ namespace VRLicensing
             barRt.anchoredPosition = Vector2.zero;
 
             demoTimerText = CreateTMPText("DemoTimerText", panelRt,
-                "Demo", 18, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
+                "", 18, FontStyles.Bold, COLOR_TEXT, TextAlignmentOptions.Center,
                 stretch: true, padding: new Vector4(12, 12, 8, 12));
+            demoTimerText.enableWordWrapping = false;
+            AutoSize(demoTimerText, 18, 12);
 
             canvasGo.SetActive(false);
         }
@@ -2832,6 +2967,7 @@ namespace VRLicensing
         {
             if (demoTimerCanvas == null) return;
             demoTimerCanvas.gameObject.SetActive(true);
+            lastHudSecond = -1; // re-render the label at once (language may have changed while hidden)
 
             // Snap into place immediately so it doesn't flash at the world origin.
             var cam = ResolveHudCam();
@@ -2915,7 +3051,7 @@ namespace VRLicensing
             int wholeSecond = Mathf.CeilToInt(remaining);
             if (wholeSecond == lastHudSecond) return;
             lastHudSecond = wholeSecond;
-            demoTimerText.text = "Demo  ·  " + FormatTime(remaining) + " left";
+            demoTimerText.text = L(demoTimerText, LicenseStrings.Key.DemoHud, FormatTime(remaining));
             demoTimerText.color = remaining <= 60f ? COLOR_ERROR : COLOR_TEXT;
         }
 
@@ -3029,9 +3165,36 @@ namespace VRLicensing
             }
         }
 
-        private void OnEnable() { SceneManager.sceneLoaded += OnSceneLoaded; }
+        private void OnEnable()
+        {
+            SceneManager.sceneLoaded += OnSceneLoaded;
+            LicenseStrings.LanguageChanged += OnLanguageChanged;
+        }
 
-        private void OnDisable() { SceneManager.sceneLoaded -= OnSceneLoaded; }
+        private void OnDisable()
+        {
+            SceneManager.sceneLoaded -= OnSceneLoaded;
+            LicenseStrings.LanguageChanged -= OnLanguageChanged;
+        }
+
+        /// <summary>
+        /// The host app changed the UI language (its selector lives next to the welcome panel):
+        /// re-render every localized label of the open panels and the HUD.
+        /// </summary>
+        private void OnLanguageChanged()
+        {
+            RefreshBoundTexts();
+            RefreshDeviceCodes();
+            lastHudSecond = -1;
+            if (welcomePanel != null && welcomePanel.activeSelf && welcomeBtnContainer != null && welcomeBtnContainer.activeSelf)
+                RefreshWelcomeInfo();
+            if (licenseExpiredPanel != null && licenseExpiredPanel.activeSelf && licExpMsgText != null)
+                licExpMsgText.text = LicenseExpiredMessage(licExpiredStoreExpiry, licExpiredReason);
+            if (demoExpiredPanel != null && demoExpiredPanel.activeSelf) ApplyPromo();
+            if (demoStoreColumn != null) RefreshStoreTexts(demoStoreColumn);
+            if (licStoreColumn != null) RefreshStoreTexts(licStoreColumn);
+            if (plansStoreColumn != null) RefreshStoreTexts(plansStoreColumn);
+        }
 
         private void OnDestroy()
         {
@@ -3193,21 +3356,6 @@ namespace VRLicensing
 
             var instance = globalKeyboardInstanceProp?.GetValue(null) as MonoBehaviour;
             return instance != null ? instance.transform.root.gameObject : null;
-        }
-
-        /// <summary>
-        /// Human-readable trial length. Demos are commonly configured well under an hour
-        /// (10-15 min), so formatting everything as hours would render "0h".
-        /// </summary>
-        private static string FormatDuration(float seconds)
-        {
-            if (seconds < 3600f)
-                return $"{Mathf.CeilToInt(seconds / 60f)} min";
-
-            float hours = seconds / 3600f;
-            return Mathf.Approximately(hours, Mathf.Round(hours))
-                ? $"{Mathf.RoundToInt(hours)} h"
-                : $"{hours:F1} h";
         }
 
         private static string FormatTime(float seconds)

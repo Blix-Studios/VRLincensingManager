@@ -81,7 +81,7 @@ namespace VRLicensing
             {
                 if (Permission.HasUserAuthorizedPermission(permission)) continue;
 
-                onStatus?.Invoke("Requesting camera permission...");
+                onStatus?.Invoke(LicenseStrings.Get(LicenseStrings.Key.RequestingCamera));
                 Permission.RequestUserPermission(permission);
 
                 float waited = 0f;
@@ -94,7 +94,7 @@ namespace VRLicensing
                 if (!Permission.HasUserAuthorizedPermission(permission))
                 {
                     Cleanup();
-                    onUnsupported?.Invoke("Camera permission denied.");
+                    onUnsupported?.Invoke(LicenseStrings.Get(LicenseStrings.Key.CameraDenied));
                     yield break;
                 }
             }
@@ -104,7 +104,7 @@ namespace VRLicensing
             if (!TryResolveZXing())
             {
                 Cleanup();
-                onUnsupported?.Invoke("QR decoder (ZXing) not available.");
+                onUnsupported?.Invoke(LicenseStrings.Get(LicenseStrings.Key.QrDecoderMissing));
                 yield break;
             }
 
@@ -117,7 +117,7 @@ namespace VRLicensing
             if (devices == null || devices.Length == 0)
             {
                 Cleanup();
-                onUnsupported?.Invoke("No camera available on this headset.");
+                onUnsupported?.Invoke(LicenseStrings.Get(LicenseStrings.Key.NoCamera));
                 yield break;
             }
 
@@ -137,7 +137,7 @@ namespace VRLicensing
                 // resolution silently delivers black frames.
                 m_Webcam = new WebCamTexture(devices[d].name);
                 m_Webcam.Play();
-                onStatus?.Invoke("Point the QR code into view...");
+                onStatus?.Invoke(LicenseStrings.Get(LicenseStrings.Key.PointQr));
 
                 float startWait = 0f;
                 while (m_Webcam.width <= 16 && startWait < 5f)
@@ -214,10 +214,9 @@ namespace VRLicensing
                 yield break; // StopScan already gave feedback
 
             if (!anyLight)
-                onUnsupported?.Invoke("This headset is not sharing the camera image. " +
-                                      "Update HorizonOS, or enter the key manually.");
+                onUnsupported?.Invoke(LicenseStrings.Get(LicenseStrings.Key.CameraNotShared));
             else
-                onStatus?.Invoke("No QR code detected. Try again or enter the key manually.");
+                onStatus?.Invoke(LicenseStrings.Get(LicenseStrings.Key.NoQrDetected));
         }
 
         private bool TryResolveZXing()
