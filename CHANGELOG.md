@@ -3,6 +3,13 @@
 All notable changes to `com.blixstudios.vr-licensing`. Pre-release tags (`vX.Y.Z-pre.N`) are
 test builds for VirtualChainsaw; the final tag is cut only after QA on the headset.
 
+## Unreleased
+
+- Welcome panel, store builds: the four-button column (demo / subscribe / key / QR) sat on top
+  of the "Select an option to continue" subtitle since pre.8 — the subtitle was half hidden in
+  every language (visible in the pre.14 Play-mode renders and in build 29). Spacing 12→10,
+  container 220→210 px and moved 20 px down; the info line below keeps a 15 px gap.
+
 ## 1.12.0-pre.14 — 2026-11-03 (tag `v1.12.0-pre.14`)
 
 The whole license UI follows the user's language (12 languages: en, es, fr, de, it, pt, ru, zh,

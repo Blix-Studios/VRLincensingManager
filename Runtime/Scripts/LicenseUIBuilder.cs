@@ -830,7 +830,12 @@ namespace VRLicensing
                     COLOR_ACCENT, COLOR_ACCENT_HOVER,
                     OnSubscribeClicked);
                 Bind(sub.GetComponentInChildren<TextMeshProUGUI>(), lang => LicenseStrings.Subscribe(lang));
-                btnContRt.sizeDelta = new Vector2(400, 220);
+                // Four buttons: tighter spacing and the container moved down so it no longer
+                // covers the subtitle (seen since pre.8: "Select an option to continue" was
+                // half hidden behind the demo button in store builds).
+                vlg.spacing = 10;
+                btnContRt.sizeDelta = new Vector2(400, 210);
+                btnContRt.anchoredPosition = new Vector2(0, -30);
             }
 
             // Button 2: Enter License Key (blue accent)
