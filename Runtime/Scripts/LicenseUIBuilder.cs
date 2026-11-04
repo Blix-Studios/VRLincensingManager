@@ -759,6 +759,15 @@ namespace VRLicensing
             AddLazyFollow(canvasGo);
         }
 
+        /// <summary>
+        /// Full-canvas dimmed backdrop. Its raycast target is deliberate, and it is NOT what makes
+        /// the gate modal: while it is open <see cref="SyncModality"/> disables every raycaster
+        /// outside the license UI and the keyboard in the whole scene, because a tester once
+        /// started the app through its own menu without touching demo or license (43e42bf). So a
+        /// host's language selector cannot be pressed while a license panel is open, wherever it
+        /// stands, and making this image non-blocking would not change that. The backdrop itself
+        /// only catches the rays that miss a control.
+        /// </summary>
         private void BuildOverlay()
         {
             overlayPanel = CreatePanel("Overlay", canvas.GetComponent<RectTransform>(),
@@ -770,6 +779,12 @@ namespace VRLicensing
         private void BuildWelcomePanel()
         {
             var overlayRt = overlayPanel.GetComponent<RectTransform>();
+
+            // Vertical layout: the button column is anchored between these two texts, so it
+            // cannot reach either of them whatever the number of buttons.
+            const float subtitleTop = 85f, subtitleHeight = 30f;
+            const float infoBottom = 14f, infoHeight = 36f;
+            const float columnGap = 10f;
 
             welcomePanel = CreatePanel("WelcomePanel", overlayRt, COLOR_PANEL_BG);
             var panelRt = welcomePanel.GetComponent<RectTransform>();
@@ -797,19 +812,20 @@ namespace VRLicensing
                 "",
                 14, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
-                size: new Vector2(500, 30), pos: new Vector2(0, -85)), LicenseStrings.Key.WelcomeSubtitle);
+                size: new Vector2(500, subtitleHeight), pos: new Vector2(0, -subtitleTop)), LicenseStrings.Key.WelcomeSubtitle);
 
             // Buttons container
             welcomeBtnContainer = CreatePanel("BtnContainer", panelRt, Color.clear);
             var btnContRt = welcomeBtnContainer.GetComponent<RectTransform>();
-            btnContRt.anchorMin = new Vector2(0.5f, 0.5f);
-            btnContRt.anchorMax = new Vector2(0.5f, 0.5f);
-            btnContRt.sizeDelta = new Vector2(400, 160);
-            btnContRt.anchoredPosition = new Vector2(0, -10);
+            btnContRt.anchorMin = new Vector2(0.5f, 0f);
+            btnContRt.anchorMax = new Vector2(0.5f, 1f);
+            btnContRt.pivot = new Vector2(0.5f, 1f);
+            btnContRt.offsetMin = new Vector2(-200f, infoBottom + infoHeight + columnGap);
+            btnContRt.offsetMax = new Vector2(200f, -(subtitleTop + subtitleHeight + columnGap));
 
             var vlg = welcomeBtnContainer.AddComponent<VerticalLayoutGroup>();
             vlg.spacing = 12;
-            vlg.childAlignment = TextAnchor.MiddleCenter;
+            vlg.childAlignment = TextAnchor.UpperCenter;
             vlg.childForceExpandWidth = true;
             vlg.childForceExpandHeight = false;
             vlg.childControlWidth = true;
@@ -830,12 +846,8 @@ namespace VRLicensing
                     COLOR_ACCENT, COLOR_ACCENT_HOVER,
                     OnSubscribeClicked);
                 Bind(sub.GetComponentInChildren<TextMeshProUGUI>(), lang => LicenseStrings.Subscribe(lang));
-                // Four buttons: tighter spacing and the container moved down so it no longer
-                // covers the subtitle (seen since pre.8: "Select an option to continue" was
-                // half hidden behind the demo button in store builds).
+                // Four buttons need the tighter spacing to fit the 215 px between the texts.
                 vlg.spacing = 10;
-                btnContRt.sizeDelta = new Vector2(400, 210);
-                btnContRt.anchoredPosition = new Vector2(0, -30);
             }
 
             // Button 2: Enter License Key (blue accent)
@@ -856,7 +868,7 @@ namespace VRLicensing
             welcomeInfoText = CreateTMPText("WelcomeInfo", panelRt,
                 "", 12, FontStyles.Italic, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 0f), pivot: new Vector2(0.5f, 0f),
-                size: new Vector2(520, 36), pos: new Vector2(0, 14));
+                size: new Vector2(520, infoHeight), pos: new Vector2(0, infoBottom));
             AutoSize(welcomeInfoText, 12, 9);
 
             CreateDeviceCodeFooter(panelRt);
@@ -2088,7 +2100,7 @@ namespace VRLicensing
                 "",
                 13, FontStyles.Normal, COLOR_TEXT_DIM, TextAlignmentOptions.Center,
                 anchor: new Vector2(0.5f, 1f), pivot: new Vector2(0.5f, 1f),
-                size: new Vector2(twoColumns ? 820 : 550, 45), pos: new Vector2(0, -72));
+                size: new Vector2(twoColumns ? 820 : 550, 45), pos: new Vector2(0, -62));
             AutoSize(licExpMsgText, 13, 9);
             licExpMsgText.text = LicenseExpiredMessage(false, null);
 

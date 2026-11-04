@@ -3,12 +3,28 @@
 All notable changes to `com.blixstudios.vr-licensing`. Pre-release tags (`vX.Y.Z-pre.N`) are
 test builds for VirtualChainsaw; the final tag is cut only after QA on the headset.
 
-## Unreleased
+## 1.12.0-pre.15 — 2026-11-04 (tag `v1.12.0-pre.15`)
 
-- Welcome panel, store builds: the four-button column (demo / subscribe / key / QR) sat on top
-  of the "Select an option to continue" subtitle since pre.8 — the subtitle was half hidden in
-  every language (visible in the pre.14 Play-mode renders and in build 29). Spacing 12→10,
-  container 220→210 px and moved 20 px down; the info line below keeps a 15 px gap.
+Layout fix only: no strings, flows or server contract change.
+
+- **Welcome panel, store builds**: the four-button column (demo / subscribe / key / QR) sat on top
+  of the "Select an option to continue" subtitle since pre.8, covering the lower ~40% of the text
+  in every language (subtitle y 85..115, first button y 53..98). The text fitted its own rect, so
+  overflow checks passed. The column is now anchored between the subtitle and the info line
+  (10 px gap to each) and stacks from the top, so it cannot reach them whatever the number of
+  buttons. Spacing 10 with four buttons, 12 with three. Direct APKs move about 5 px.
+- **License-expired panel, store builds**: same pattern with a text. The message box (y 98..143)
+  reached 7 px into the column titles (y 79..105). It was tight rather than cut with two lines, and
+  would have collided on a third. The message moved 10 px up, clear of both.
+- **Key-entry and demo-expired panels**: checked, no overlap.
+- **Backdrop documented, not changed**: the overlay's raycast target is deliberate and is not what
+  makes the gate modal. While a panel is open `SyncModality` disables every raycaster outside the
+  license UI and the keyboard in the whole scene (43e42bf: a tester started the app through its
+  own menu without touching demo or license). So a host's language selector cannot be pressed
+  while a panel is open, wherever it stands; see the README.
+- **Tests**: `PanelLayoutTests` (26 cases) builds the real UI and compares rects: each panel's
+  subtitle against its controls and other texts, controls against each other, in the store and
+  direct-APK variants. Checked against the pre.14 geometry: it fails with the numbers above.
 
 ## 1.12.0-pre.14 — 2026-11-03 (tag `v1.12.0-pre.14`)
 

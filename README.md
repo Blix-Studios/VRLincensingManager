@@ -146,6 +146,14 @@ to the selected locale code whenever it changes (VirtualChainsaw: `LicenseLangua
 v1.12.0-pre.14 the whole UI is localized and an open panel re-renders on the change
 (`LicenseStrings.LanguageChanged`); `LicenseStrings.Get(LicenseStrings.Key.X)` gives any UI string.
 
+**The gate is modal, so a host's language menu cannot be pressed while a license panel is open.**
+While any panel is up the UI builder disables every `BaseRaycaster` outside the license UI and the
+keyboard, in the whole scene, and rescans about once a second. That is deliberate: a tester once
+started an app through its own menu without touching demo or license. The panels therefore show the
+headset's language (or a language the host set beforehand through `LanguageOverride`) until the
+student closes them, and the host's menu works again afterwards. A locale the package has no strings
+for (see `SupportedLanguages`) falls back to the headset's language in the same way.
+
 Unknown license statuses (e.g. `revoked`) deserialize without error and are treated as "not valid" with the server's message; an online re-validation that returns any verdict other than a connection error drops the cached license immediately.
 
 ## Testing with Sandbox Licenses
