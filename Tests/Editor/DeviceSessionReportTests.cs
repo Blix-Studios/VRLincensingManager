@@ -250,6 +250,57 @@ namespace VRLicensing.Tests
         }
 
         [Test]
+        public void ServerClamp_LocalAdoptsTheLowerServerTotal_SoARaisedLimitIsNotEaten()
+        {
+            // Headset over-counted by an old build: local 6000 s. The server has clamped the row
+            // to its limit (900 s) and the admin then raised the limit to 1800 s.
+            const float local = 6000f, server = 900f, oldLimit = 900f, newLimit = 1800f;
+
+            // get_device_status at launch: the local total is far above the limit it was counted under.
+            float afterStatus = DemoReportLedger.LocalAfterStatus(local, server, oldLimit);
+            Assert.AreEqual(900f, afterStatus);
+            Assert.AreEqual(900f, newLimit - afterStatus, "remaining 900 s");
+            Assert.AreEqual(0f, DemoReportLedger.Delta(afterStatus, server, newLimit), "and the next report adds nothing");
+
+            // Same headset when only a report answer arrives (no status first): the delta is
+            // clamped to what is left (here against the old limit: nothing) and the answer wins.
+            float delta = DemoReportLedger.Delta(local, server, oldLimit);
+            Assert.AreEqual(0f, delta);
+            float afterReport = DemoReportLedger.LocalAfterReport(local, local, server + delta);
+            Assert.AreEqual(900f, afterReport);
+            Assert.AreEqual(900f, newLimit - afterReport, "remaining 900 s");
+
+            // What happened before this rule: the local total stayed at 6000 and the next report
+            // filled the raised limit at once.
+            Assert.AreEqual(900f, DemoReportLedger.Delta(local, server, newLimit), "the raise would have been eaten");
+        }
+
+        [Test]
+        public void StatusAnswer_KeepsUnreportedDemoTime()
+        {
+            // A demo session that ended without expiring is only reported at the next launch:
+            // local 300 s, server 0 s. Adopting the server total here would give the time back
+            // on every launch.
+            Assert.AreEqual(300f, DemoReportLedger.LocalAfterStatus(300f, 0f, 900f));
+            Assert.AreEqual(300f, DemoReportLedger.Delta(300f, 0f, 900f), "it goes out as the next delta");
+
+            Assert.AreEqual(900f, DemoReportLedger.LocalAfterStatus(900f, 600f, 900f), "exactly at the limit is still real play");
+            Assert.AreEqual(900.5f, DemoReportLedger.LocalAfterStatus(900.5f, 600f, 900f), "a frame over the limit (old builds) too");
+            Assert.AreEqual(500f, DemoReportLedger.LocalAfterStatus(120f, 500f, 900f), "server ahead: trust the server");
+            Assert.AreEqual(1140f, DemoReportLedger.LocalAfterStatus(1140f, 1140f, 900f), "row not clamped yet: nothing to do");
+            Assert.AreEqual(900f, DemoReportLedger.LocalAfterStatus(1140f, 900f, 900f), "19 of 15 min, clamped by the server");
+        }
+
+        [Test]
+        public void ReportAnswer_IsTheAuthority_PlusWhatWasPersistedMeanwhile()
+        {
+            Assert.AreEqual(600f, DemoReportLedger.LocalAfterReport(600f, 600f, 600f), "delta accepted in full");
+            Assert.AreEqual(1500f, DemoReportLedger.LocalAfterReport(600f, 600f, 1500f), "usage from elsewhere");
+            Assert.AreEqual(900f, DemoReportLedger.LocalAfterReport(3000f, 3000f, 900f), "server clamp");
+            Assert.AreEqual(930f, DemoReportLedger.LocalAfterReport(3030f, 3000f, 900f), "30 s persisted while the request was in flight are kept");
+        }
+
+        [Test]
         public void EveryReportHasItsOwnId()
         {
             var ledger = new DemoReportLedger();

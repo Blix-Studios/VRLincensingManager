@@ -87,6 +87,10 @@ namespace VRLicensing
         private const string STORE_EVENTS_KEY = "vrl_store_events";
         private bool reportInFlight;              // one report_device_session at a time (the demo delta must not be sent twice)
         private readonly DemoReportLedger reportLedger = new DemoReportLedger(); // report ids, delta clamp, unconfirmed reports (pre.16)
+        // serverReportedDemo starts as an ASSUMPTION (= the local total) and becomes the server's
+        // real total with the first status / report answer of the run. Only a delta computed from
+        // the real total lets a lower answer be read as "the server clamped it".
+        private bool serverDemoTotalKnown;
         private bool flushAfterReport;            // an immediate event arrived while a report was in flight
         private bool plansPanelOpen;              // plans_opened is queued once per opening
         private string pendingNotice;               // shown once on the next panel (e.g. offline notice)
@@ -423,6 +427,7 @@ namespace VRLicensing
                 config.productId,
                 storeUserId, // null until the server verified a store account (phase B)
                 (status) => {
+                    float limitWhenCounted = EffectiveDemoLimitSeconds; // before this answer changes it
                     AdoptServerDemoLimit(status); // also when found=false: the server's resolved default (spec 10 §4)
                     if (status != null && status.found)
                     {
@@ -430,18 +435,14 @@ namespace VRLicensing
                         demoBlockedByServer = status.demo_blocked;
                         serverDemoUsed = status.demo_used_seconds;
                         serverReportedDemo = status.demo_used_seconds;
+                        serverDemoTotalKnown = true;
                         ApplyServerDemoReset(status);
                         NoteDemoResetAt(status);
                         ActivePromo = (status.promo != null && status.promo.IsValid) ? status.promo : null;
 
-                        // If server has more demo time used than local, trust the server
-                        float localDemoUsed = SecureLicenseStorage.GetDemoUsedSeconds();
-                        if (status.demo_used_seconds > localDemoUsed)
-                        {
-                            Debug.Log($"[VR Licensing] Server demo time ({status.demo_used_seconds}s) > " +
-                                $"local ({localDemoUsed}s). Using server value.");
-                            SecureLicenseStorage.SetDemoUsedSeconds(status.demo_used_seconds);
-                        }
+                        // Server ahead: trust it. Local ahead: unreported demo time is kept, an
+                        // over-count above the limit is replaced by the server total (pre.16).
+                        ReconcileLocalDemoWithStatus(status, limitWhenCounted);
 
                         Debug.Log($"[VR Licensing] Server device check: demo_used={status.demo_used_seconds}s, " +
                             $"blocked={status.demo_blocked}, sessions={status.session_count}");
@@ -1581,6 +1582,25 @@ namespace VRLicensing
         private bool demoLimitLogged; // "Demo limit from server" printed at least once this run
 
         /// <summary>
+        /// v1.12.0-pre.16 - applies <see cref="DemoReportLedger.LocalAfterStatus"/> to the sealed
+        /// local total after a <c>get_device_status</c> answer. Returns true when the local total
+        /// was LOWERED to the server's (an over-count above the limit, clamped by the server).
+        /// </summary>
+        private bool ReconcileLocalDemoWithStatus(DeviceStatus status, float limitWhenCounted)
+        {
+            float local = SecureLicenseStorage.GetDemoUsedSeconds();
+            float keep = DemoReportLedger.LocalAfterStatus(local, status.demo_used_seconds, limitWhenCounted);
+            if (Mathf.Abs(keep - local) <= 0.01f) return false;
+
+            Debug.Log(keep > local
+                ? $"[VR Licensing] Server demo time ({status.demo_used_seconds}s) > local ({local}s). Using server value."
+                : $"[VR Licensing] Local demo total ({local:F0}s) is above the limit it was counted under " +
+                  $"({limitWhenCounted:F0}s) and the server holds {status.demo_used_seconds:F0}s: adopting the server total.");
+            SecureLicenseStorage.SetDemoUsedSeconds(keep);
+            return keep < local;
+        }
+
+        /// <summary>
         /// An expired DEMO (not a license or store expiry, not an admin block) whose used time is
         /// now under the effective limit goes back to the welcome panel, where the user can start
         /// it again. Used after a raised server limit and after a mid-run admin demo reset.
@@ -1652,12 +1672,14 @@ namespace VRLicensing
                         serverTotalRefreshed = true;
                         if (status != null && status.found)
                         {
+                            float limitWhenCounted = EffectiveDemoLimitSeconds;
                             serverReportedDemo = status.demo_used_seconds;
+                            serverDemoTotalKnown = true;
                             ApplyServerDemoReset(status);
                             NoteDemoResetAt(status);
-                            if (status.demo_used_seconds > SecureLicenseStorage.GetDemoUsedSeconds())
-                                SecureLicenseStorage.SetDemoUsedSeconds(status.demo_used_seconds);
+                            bool lowered = ReconcileLocalDemoWithStatus(status, limitWhenCounted);
                             AdoptServerDemoLimit(status);
+                            if (lowered) ReopenDemoIfAvailable("server demo total adopted");
                         }
                         Debug.Log($"[VR Licensing] Unconfirmed report: server total refreshed ({serverReportedDemo:F0}s).");
                     },
@@ -1669,6 +1691,7 @@ namespace VRLicensing
             DemoReportLedger.Report entry = reportLedger.Begin(
                 localDemo, serverReportedDemo, EffectiveDemoLimitSeconds, serverTotalRefreshed);
             string events = DrainStoreEvents();
+            bool deltaFromRealServerTotal = serverDemoTotalKnown;
 
             DeviceSessionReport report = supabaseClient.NewSessionReport(config.productId);
             report.demoDeltaSeconds = entry.deltaSeconds;
@@ -1687,14 +1710,34 @@ namespace VRLicensing
                     if (status != null)
                     {
                         serverReportedDemo = status.demo_used_seconds;
+                        serverDemoTotalKnown = true;
                         ActivePromo = (status.promo != null && status.promo.IsValid) ? status.promo : null;
                         bool reset = ApplyServerDemoReset(status);
-                        if (reset) localDemo = status.demo_used_seconds;
                         NoteDemoResetAt(status);
-                        if (status.demo_used_seconds > localDemo)
-                            SecureLicenseStorage.SetDemoUsedSeconds(status.demo_used_seconds);
+
+                        // v1.12.0-pre.16: after a report the server total is the authority. Higher
+                        // (usage elsewhere) or lower (the server clamped the delta, or we did: an
+                        // over-count from an older build) it replaces the local total, plus what
+                        // was persisted here while the request was in flight. Without the lower
+                        // case a raised limit would be eaten by the next report. A re-sent report
+                        // carries an older delta, and a first report sent before any server answer
+                        // (cached-licence launch) assumed the totals were equal: in both the local
+                        // total is only ever raised.
+                        float localNow = SecureLicenseStorage.GetDemoUsedSeconds();
+                        float keep = DemoReportLedger.LocalAfterReport(
+                            localNow, reset ? localNow : localDemo, status.demo_used_seconds);
+                        bool lowered = keep < localNow - 0.01f && !entry.isRetry && deltaFromRealServerTotal;
+                        if (keep > localNow + 0.01f || lowered)
+                        {
+                            if (lowered)
+                                Debug.Log($"[VR Licensing] Server demo total ({status.demo_used_seconds:F0}s) is below " +
+                                          $"the local one ({localNow:F0}s) after the report: adopting the server total.");
+                            SecureLicenseStorage.SetDemoUsedSeconds(keep);
+                        }
+
                         AdoptServerDemoLimit(status);                      // a raised limit reopens an expired demo
                         if (reset) ReopenDemoIfAvailable("admin demo reset"); // same path for a reset received mid-run
+                        else if (lowered) ReopenDemoIfAvailable("server demo total adopted");
                     }
                 },
                 (error, outcomeUnknown) =>

@@ -36,6 +36,16 @@ optional parameters). Built on pre.15, whose tag (2eea18d, layout fix only) is n
   `plans_opened` flush sent the same delta again.
 - **Delta clamp**: `delta = clamp(local - server, 0, limit - server)`, so a headset holding an
   over-counted total from an older build reports at most what is left up to the limit.
+- **Server clamp adopted locally** (web side, 2026-11-06): when the server holds a LOWER demo
+  total than the headset, the sealed local total and `serverReportedDemo` follow it, so a limit
+  raised afterwards is not eaten by the next report (local 6000 s, server 900 s, limit raised to
+  1800 s: 900 s remain). After a `report_device_session` answer the server total always wins
+  (plus what was persisted while the request was in flight; a re-sent report, or a first report
+  sent before any server answer of the run, only ever raises).
+  After `get_device_status` it wins only when the local total is above the limit it was counted
+  under — an over-count from an older build. A local total at or under that limit is demo time
+  played and not reported yet (a session that ended without expiring is reported at the next
+  launch) and is kept: adopting the server total there would hand the time back on every launch.
 - **New report fields** (`DeviceSessionReport`): `p_app_version` (`LicenseManager.AppVersion`,
   default `Application.version`; hosts set "1.0.0 (31)"), `p_upm_version` (`PackageVersion.Value`),
   `p_license_state` (`demo` | `demo_expired` | `licensed` | `license_expired` |
@@ -57,9 +67,9 @@ optional parameters). Built on pre.15, whose tag (2eea18d, layout fix only) is n
 - **Device code in the feedback panel**: already there since pre.11 (footer of every panel,
   including plans and feedback). The pause menu belongs to each app.
 - README: the gate is modal — panels must be dismissed before the app's own menus can be used.
-- Tests: `DemoStopwatchTests` (12: frame gap of 20 min ignored, nothing counted while paused /
+- Tests: `DemoStopwatchTests` (13: frame gap of 20 min ignored, nothing counted while paused /
   unfocused / not worn, stops at the limit, stored total above the limit, raise after expiry,
-  nothing outside the demo), `DeviceSessionReportTests` (17: fields sent, old contract body,
+  nothing outside the demo, server clamp + raised limit), `DeviceSessionReportTests` (20: fields sent, old contract body,
   one retry on function-not-found, timeout = unknown outcome, ledger ids / clamp / unconfirmed
   reports, state mapping, generated version).
 

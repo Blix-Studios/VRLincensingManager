@@ -214,6 +214,23 @@ namespace VRLicensing.Tests
         }
 
         [Test]
+        public void Manager_ServerClampAdopted_ThenLimitRaised_Leaves900Seconds()
+        {
+            // local 6000, server 900, limit raised to 1800 → remaining 900.
+            SecureLicenseStorage.SetDemoUsedSeconds(6000f);
+            float adopted = DemoReportLedger.LocalAfterStatus(SecureLicenseStorage.GetDemoUsedSeconds(), 900f, 900f);
+            SecureLicenseStorage.SetDemoUsedSeconds(adopted);
+
+            manager.StartDemo(1800f);
+
+            Assert.AreEqual(0, expiredEvents, "the demo is available again");
+            Assert.AreEqual(900f, manager.RemainingDemoSeconds, 1e-3f);
+            manager.Tick(1f, true);
+            for (int i = 0; i < 60; i++) manager.Tick(1f, true);
+            Assert.AreEqual(840f, manager.RemainingDemoSeconds, 1e-2f, "and it counts down from there");
+        }
+
+        [Test]
         public void Manager_UserPresenceProviderIsRespectedByDefaultClock()
         {
             // The provider is what Update consults; here it only has to be settable and read.

@@ -43,6 +43,47 @@ namespace VRLicensing
             return delta;
         }
 
+        /// <summary>Slack (seconds) before a local total counts as "above the limit".</summary>
+        public const float OverLimitToleranceSeconds = 1f;
+
+        /// <summary>
+        /// Local demo total to keep after a <c>get_device_status</c> answer.
+        /// <list type="bullet">
+        /// <item>Server ahead: the server total (demo used elsewhere / before a wipe).</item>
+        /// <item>Local ahead but not above the limit it was counted under: kept. That is demo
+        /// time played and not reported yet (a session that ended without expiring, offline
+        /// play); it goes out as the next delta. Adopting the server total here would erase it
+        /// on every launch.</item>
+        /// <item>Local ahead AND above the limit it was counted under: the server total. No
+        /// build since pre.16 can count past the limit, so this is an over-count from an older
+        /// build that the server has clamped; keeping it would make the next report eat a
+        /// raised limit (local 6000, server 900, limit raised to 1800: 900 s must remain).</item>
+        /// </list>
+        /// </summary>
+        /// <param name="localSeconds">Local stored total.</param>
+        /// <param name="serverSeconds">Total in the answer.</param>
+        /// <param name="limitWhenCountedSeconds">Effective limit BEFORE this answer was adopted.</param>
+        public static float LocalAfterStatus(float localSeconds, float serverSeconds, float limitWhenCountedSeconds)
+        {
+            if (serverSeconds >= localSeconds) return serverSeconds;
+            float ceiling = Math.Max(limitWhenCountedSeconds, serverSeconds);
+            return localSeconds > ceiling + OverLimitToleranceSeconds ? serverSeconds : localSeconds;
+        }
+
+        /// <summary>
+        /// Local demo total to keep after a confirmed <c>report_device_session</c>: the server's
+        /// total after the report — higher (usage elsewhere) or lower (the server clamped the
+        /// delta, or we did) — plus whatever was persisted locally while the request was in
+        /// flight. After a report the server is the authority on everything sent.
+        /// </summary>
+        /// <param name="localNowSeconds">Local stored total when the answer arrived.</param>
+        /// <param name="localWhenSentSeconds">Local stored total the report was computed from.</param>
+        /// <param name="serverAfterSeconds">Total in the answer.</param>
+        public static float LocalAfterReport(float localNowSeconds, float localWhenSentSeconds, float serverAfterSeconds)
+        {
+            return serverAfterSeconds + Math.Max(0f, localNowSeconds - localWhenSentSeconds);
+        }
+
         /// <summary>
         /// The report to send now. With an unconfirmed report and no fresh server total
         /// (<paramref name="serverTotalRefreshed"/> false) it is that same report again; otherwise
