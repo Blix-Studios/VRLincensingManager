@@ -7,6 +7,6 @@ namespace VRLicensing
     /// <summary>Version of com.blixstudios.vr-licensing, sent as <c>p_upm_version</c>.</summary>
     public static class PackageVersion
     {
-        public const string Value = "1.12.0-pre.15";
+        public const string Value = "1.12.0-pre.16";
     }
 }

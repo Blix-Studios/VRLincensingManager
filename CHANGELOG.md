@@ -3,15 +3,26 @@
 All notable changes to `com.blixstudios.vr-licensing`. Pre-release tags (`vX.Y.Z-pre.N`) are
 test builds for VirtualChainsaw; the final tag is cut only after QA on the headset.
 
-## Unreleased — 1.12.0-pre.16 (not tagged: waiting for the on-device confirmation)
+## 1.12.0-pre.16 — 2026-11-06
 
 Device telemetry and demo counting (spec `11-DEVICE-TELEMETRY.md` §6; contract §2 item 3 gains
 optional parameters). Built on pre.15, whose tag (2eea18d, layout fix only) is not moved.
 
+**Device run that confirmed the cause** (2026-11-06, Quest 3, Chainsaw store build 30 with
+pre.14, USB plugged in): the demo was started, the headset taken off after about 35 s of play
+and left asleep for 39 minutes. 163 ms after the app resumed it logged `Demo time expired.` and
+`Reporting device session (delta 2375s)`: the whole wall-clock time since the demo started,
+for about 35 s really played (local total 2499 s against a 900 s limit). The headset slept at
+once and Android did pause the app, so ordinary sleep is enough: on resume the old handler
+re-based the session start on a `Time.unscaledTime` that had not advanced yet, and the next
+frame jumped the whole gap. The fix below is covered by EditMode tests; its own headset run
+comes with the first build that pins this tag.
+
 - **Demo clock rewritten** (`DemoStopwatch`, used by `DemoModeManager`). Until pre.15 the demo
-  time was `Time.unscaledTime - sessionStart`: wall-clock time that only stopped on
-  `OnApplicationPause(true)`. A headset taken off mid-demo kept counting until Android paused
-  the app, the expiry was only detected on the next frame, and nothing capped the value written
+  time was `Time.unscaledTime - sessionStart`: wall-clock time that was only
+  persisted on `OnApplicationPause(true)`. A headset taken off mid-demo counted the whole time
+  it was off, asleep or not (see the device run above), the expiry was only detected on the
+  next frame, and nothing capped the value written
   or reported (rows of 17-19, 118 and 1141 minutes against a 15-minute limit). Now the clock is
   an accumulator fed one frame at a time:
   - a frame counts only while the app is not paused, has focus (ignored in the Editor) and the
