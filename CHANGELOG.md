@@ -3,6 +3,64 @@
 All notable changes to `com.blixstudios.vr-licensing`. Pre-release tags (`vX.Y.Z-pre.N`) are
 test builds for VirtualChainsaw; the final tag is cut only after QA on the headset.
 
+## Unreleased — 1.12.0-pre.16 (not tagged: waiting for the on-device confirmation)
+
+Device telemetry and demo counting (spec `11-DEVICE-TELEMETRY.md` §6; contract §2 item 3 gains
+optional parameters). Built on pre.15, whose tag (2eea18d, layout fix only) is not moved.
+
+- **Demo clock rewritten** (`DemoStopwatch`, used by `DemoModeManager`). Until pre.15 the demo
+  time was `Time.unscaledTime - sessionStart`: wall-clock time that only stopped on
+  `OnApplicationPause(true)`. A headset taken off mid-demo kept counting until Android paused
+  the app, the expiry was only detected on the next frame, and nothing capped the value written
+  or reported (rows of 17-19, 118 and 1141 minutes against a 15-minute limit). Now the clock is
+  an accumulator fed one frame at a time:
+  - a frame counts only while the app is not paused, has focus (ignored in the Editor) and the
+    user is present (`CommonUsages.userPresence` of the head device; "present" when the runtime
+    does not report it; hosts can set `DemoModeManager.UserPresenceProvider`);
+  - a single frame longer than 3 s (`DemoStopwatch.MaxFrameGapSeconds`) is dropped whole, and so
+    is the first frame after any pause;
+  - the total stops at the effective limit exactly (a stored total already above it is left
+    alone) and the time counted so far is persisted on focus loss as well as on pause;
+  - `LicenseManager` stops a clock found running outside `Demo` state (a net under the existing
+    paths: key redeemed, subscribed, plans/feedback opened, expiry).
+  Players no longer lose demo time by taking the headset off.
+- `[VR Licensing] demo:` lines for `StartDemo`, "clock held (reason)", "clock running again" and
+  "frame gap of N s ignored" are now logged in **release builds** too, with both clocks
+  (`unscaledTime`, `realtime`); the 30-second tick stays development-only.
+- **Report id and no double counting** (`DemoReportLedger`): every `report_device_session`
+  carries `p_report_id` (a new uuid per report). A report whose outcome is unknown (timeout, no
+  connection, 5xx, unreadable answer) stays pending: the next report first re-reads the server
+  total with `get_device_status` and sends a new delta from it; only when that refresh fails too
+  is the same report sent again with the same id and delta. This closes the suspected double
+  count where the expiry report timed out after being applied and the expired panel's
+  `plans_opened` flush sent the same delta again.
+- **Delta clamp**: `delta = clamp(local - server, 0, limit - server)`, so a headset holding an
+  over-counted total from an older build reports at most what is left up to the limit.
+- **New report fields** (`DeviceSessionReport`): `p_app_version` (`LicenseManager.AppVersion`,
+  default `Application.version`; hosts set "1.0.0 (31)"), `p_upm_version` (`PackageVersion.Value`),
+  `p_license_state` (`demo` | `demo_expired` | `licensed` | `store_subscribed` | `blocked`) and
+  `p_locale` (the language the license UI shows). Empty values are omitted.
+  - `Unlicensed` (welcome panel) reports `demo`; `Expired` reports `demo_expired` for a demo and
+    for a key/subscription that ran out (the server has no separate value); `ClockTampered`
+    reports nothing; an admin block reports `blocked` unless the headset is unlocked.
+  - **Old servers keep working**: a server that does not know the parameters answers PostgREST
+    function-not-found (404 / PGRST202); the same report is sent once more without them and the
+    rest of the run skips them (`SupabaseClient.ExtendedReportSupported`).
+  - Not sent on `get_device_status`: no server accepts them there yet.
+- `PackageVersion.Value` is generated from `package.json` by `Editor/PackageVersionGenerator.cs`
+  (on editor load, only where the package is editable) and checked by a test, so the constant
+  is never typed by hand.
+- A `report_device_session` answer with `ok:false` is now treated as a refusal instead of being
+  read as "server total 0".
+- **Device code in the feedback panel**: already there since pre.11 (footer of every panel,
+  including plans and feedback). The pause menu belongs to each app.
+- README: the gate is modal — panels must be dismissed before the app's own menus can be used.
+- Tests: `DemoStopwatchTests` (12: frame gap of 20 min ignored, nothing counted while paused /
+  unfocused / not worn, stops at the limit, stored total above the limit, raise after expiry,
+  nothing outside the demo), `DeviceSessionReportTests` (17: fields sent, old contract body,
+  one retry on function-not-found, timeout = unknown outcome, ledger ids / clamp / unconfirmed
+  reports, state mapping, generated version).
+
 ## 1.12.0-pre.15 — 2026-11-04 (tag `v1.12.0-pre.15`)
 
 Layout fix only: no strings, flows or server contract change.

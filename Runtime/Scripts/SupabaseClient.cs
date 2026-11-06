@@ -58,6 +58,42 @@ namespace VRLicensing
         /// </summary>
         private static bool IsFunctionMissing(UnityWebRequest request) => request.responseCode == 404;
 
+        /// <summary>Sends one RPC and hands back the raw answer (v1.12.0-pre.16).</summary>
+        public delegate IEnumerator RpcTransport(string function, string jsonBody, Action<RpcResponse> onDone);
+
+        /// <summary>Null = UnityWebRequest against Supabase. Tests plug a fake here; nothing else should.</summary>
+        public RpcTransport Transport;
+
+        /// <summary>
+        /// False once the server has answered function-not-found to a report carrying the pre.16
+        /// parameters: the rest of the run sends reports without them (old server).
+        /// </summary>
+        public bool ExtendedReportSupported { get; private set; } = true;
+
+        private IEnumerator SendRpc(string function, string jsonBody, Action<RpcResponse> onDone)
+        {
+            if (Transport != null)
+            {
+                yield return Transport(function, jsonBody, onDone);
+                yield break;
+            }
+
+            using (var request = BuildRpc(function, jsonBody))
+            {
+                yield return request.SendWebRequest();
+                onDone(new RpcResponse
+                {
+                    // ProtocolError = the server answered with a 4xx/5xx; anything else that is
+                    // not Success means no usable answer arrived (timeout, no connection).
+                    transportOk = request.result == UnityWebRequest.Result.Success ||
+                                  request.result == UnityWebRequest.Result.ProtocolError,
+                    httpCode = request.responseCode,
+                    body = request.downloadHandler != null ? request.downloadHandler.text : null,
+                    error = request.error,
+                });
+            }
+        }
+
         private static string Snippet(UnityWebRequest request)
         {
             string text = request.downloadHandler != null ? request.downloadHandler.text : null;
@@ -189,41 +225,77 @@ namespace VRLicensing
             string lastLicenseKey, Action<DeviceStatus> onSuccess, Action<string> onError,
             string eventsJsonArray = null)
         {
-            var body = JsonUtility.ToJson(new ReqReport
+            var report = NewSessionReport(productId);
+            report.demoDeltaSeconds = demoDeltaSeconds;
+            report.lastLicenseKey = lastLicenseKey;
+            report.eventsJsonArray = eventsJsonArray;
+            return ReportDeviceSession(report, onSuccess, (message, outcomeUnknown) => onError?.Invoke(message));
+        }
+
+        /// <summary>A report for this headset with the device fields filled in.</summary>
+        public DeviceSessionReport NewSessionReport(int productId)
+        {
+            return new DeviceSessionReport
             {
-                p_device_id = SystemInfo.deviceUniqueIdentifier,
-                p_product_id = productId,
-                p_demo_delta_seconds = Mathf.Max(0f, demoDeltaSeconds),
-                p_device_model = SystemInfo.deviceModel,
-                p_device_name = SystemInfo.deviceName,
-                p_last_license_key = lastLicenseKey ?? ""
-            });
+                deviceId = SystemInfo.deviceUniqueIdentifier,
+                productId = productId,
+                deviceModel = SystemInfo.deviceModel,
+                deviceName = SystemInfo.deviceName,
+            };
+        }
 
-            // JsonUtility cannot emit a free-form jsonb value; splice the pre-built array in.
-            if (!string.IsNullOrEmpty(eventsJsonArray))
-                body = body.Substring(0, body.Length - 1) + ",\"p_events\":" + eventsJsonArray + "}";
+        /// <summary>
+        /// v1.12.0-pre.16 (spec 11 §4/§6): sends <paramref name="report"/> with its report id and
+        /// the build / package / state / language fields. A server that does not know those
+        /// parameters answers function-not-found: the same report is sent ONCE more without them
+        /// and the rest of the run skips them (<see cref="ExtendedReportSupported"/>).
+        /// <paramref name="onError"/> gets the message and whether the outcome is unknown (no
+        /// answer, 5xx, unreadable answer) — as opposed to refused, which is certain.
+        /// </summary>
+        public IEnumerator ReportDeviceSession(DeviceSessionReport report,
+            Action<DeviceStatus> onSuccess, Action<string, bool> onError)
+        {
+            bool extended = ExtendedReportSupported;
+            RpcResponse response = null;
 
-            using (var request = BuildRpc("report_device_session", body))
+            Debug.Log($"[VR Licensing] Reporting device session (delta {Mathf.Max(0f, report.demoDeltaSeconds):F0}s" +
+                      (extended && !string.IsNullOrEmpty(report.licenseState) ? $", state {report.licenseState}" : "") + ")...");
+            yield return SendRpc("report_device_session", report.ToJson(extended), r => response = r);
+
+            if (extended && response != null && response.IsFunctionNotFound)
             {
-                Debug.Log($"[VR Licensing] Reporting device session (delta {Mathf.Max(0f, demoDeltaSeconds):F0}s)...");
-                yield return request.SendWebRequest();
-
-                if (request.result != UnityWebRequest.Result.Success)
-                {
-                    onError?.Invoke($"Device session report failed: {request.error}");
-                    yield break;
-                }
-
-                try
-                {
-                    var status = JsonUtility.FromJson<DeviceStatus>(request.downloadHandler.text);
-                    onSuccess?.Invoke(status);
-                }
-                catch (Exception e)
-                {
-                    onError?.Invoke($"Error parsing report response: {e.Message}");
-                }
+                ExtendedReportSupported = false;
+                Debug.Log("[VR Licensing] The server does not accept the pre.16 report fields (function not found) — " +
+                          "sending the report without them, and for the rest of this run.");
+                response = null;
+                yield return SendRpc("report_device_session", report.ToJson(false), r => response = r);
             }
+
+            if (response == null || !response.IsSuccess)
+            {
+                string why = response == null ? "no answer"
+                    : !string.IsNullOrEmpty(response.error) ? response.error : "HTTP " + response.httpCode;
+                onError?.Invoke($"Device session report failed: {why}", response == null || response.OutcomeUnknown);
+                yield break;
+            }
+
+            DeviceStatus status;
+            try
+            {
+                status = JsonUtility.FromJson<DeviceStatus>(response.body);
+            }
+            catch (Exception e)
+            {
+                onError?.Invoke($"Error parsing report response: {e.Message}", true);
+                yield break;
+            }
+
+            if (status == null || !status.ok)
+            {
+                onError?.Invoke("Device session report refused by the server.", false);
+                yield break;
+            }
+            onSuccess?.Invoke(status);
         }
 
         // ────────────────────────────────────────────────────────────────────

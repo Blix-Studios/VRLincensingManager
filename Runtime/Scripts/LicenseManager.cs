@@ -86,6 +86,7 @@ namespace VRLicensing
         private StoreEventQueue storeEvents;      // pending p_events, persisted (v1.12.0-pre.9)
         private const string STORE_EVENTS_KEY = "vrl_store_events";
         private bool reportInFlight;              // one report_device_session at a time (the demo delta must not be sent twice)
+        private readonly DemoReportLedger reportLedger = new DemoReportLedger(); // report ids, delta clamp, unconfirmed reports (pre.16)
         private bool flushAfterReport;            // an immediate event arrived while a report was in flight
         private bool plansPanelOpen;              // plans_opened is queued once per opening
         private string pendingNotice;               // shown once on the next panel (e.g. offline notice)
@@ -1122,14 +1123,12 @@ namespace VRLicensing
                 clockGuard.UpdateHighestKnownTime();
             }
 
-            // Update demo timer in real-time using DemoModeManager
-            if (CurrentState == LicenseState.Demo && demoManager != null)
+            // v1.12.0-pre.16: the demo clock may only run in Demo state. Every path out of Demo
+            // already stops it; this is the net under them (it also persists what was counted).
+            if (demoManager != null && demoManager.IsRunning && CurrentState != LicenseState.Demo)
             {
-                if (demoManager.IsDemoExpired)
-                {
-                    // DemoModeManager will fire OnDemoExpired, handled by HandleDemoExpired
-                    return;
-                }
+                Debug.LogWarning($"[VR Licensing] Demo clock was running in state {CurrentState} — stopped.");
+                demoManager.StopDemo();
             }
         }
 
@@ -1640,14 +1639,51 @@ namespace VRLicensing
             while (reportInFlight) yield return null;
             reportInFlight = true;
 
+            // v1.12.0-pre.16: the previous report may or may not have reached the server (timeout,
+            // connection lost — e.g. the expiry report, followed at once by the plans_opened
+            // flush of the expired panel). Ask the server what it has before computing a delta,
+            // so the same demo time is never sent twice.
+            bool serverTotalRefreshed = false;
+            if (reportLedger.HasUnconfirmed)
+            {
+                yield return supabaseClient.GetDeviceStatus(config.productId, storeUserId,
+                    (status) =>
+                    {
+                        serverTotalRefreshed = true;
+                        if (status != null && status.found)
+                        {
+                            serverReportedDemo = status.demo_used_seconds;
+                            ApplyServerDemoReset(status);
+                            NoteDemoResetAt(status);
+                            if (status.demo_used_seconds > SecureLicenseStorage.GetDemoUsedSeconds())
+                                SecureLicenseStorage.SetDemoUsedSeconds(status.demo_used_seconds);
+                            AdoptServerDemoLimit(status);
+                        }
+                        Debug.Log($"[VR Licensing] Unconfirmed report: server total refreshed ({serverReportedDemo:F0}s).");
+                    },
+                    (error) => Debug.LogWarning("[VR Licensing] Unconfirmed report and the server total could not be " +
+                                                $"refreshed ({error}) — sending the same report again with the same id."));
+            }
+
             float localDemo = SecureLicenseStorage.GetDemoUsedSeconds();
-            float delta = Mathf.Max(0f, localDemo - serverReportedDemo);
+            DemoReportLedger.Report entry = reportLedger.Begin(
+                localDemo, serverReportedDemo, EffectiveDemoLimitSeconds, serverTotalRefreshed);
             string events = DrainStoreEvents();
 
-            yield return supabaseClient.ReportDeviceSession(
-                config.productId, delta, lastLicenseKey,
+            DeviceSessionReport report = supabaseClient.NewSessionReport(config.productId);
+            report.demoDeltaSeconds = entry.deltaSeconds;
+            report.lastLicenseKey = lastLicenseKey;
+            report.eventsJsonArray = events;
+            report.reportId = entry.id;
+            report.appVersion = EffectiveAppVersion;
+            report.upmVersion = PackageVersion.Value;
+            report.licenseState = LicenseStateCode.For(CurrentState, demoBlockedByServer);
+            report.locale = LicenseStrings.CurrentLanguage; // the language the license UI is showing
+
+            yield return supabaseClient.ReportDeviceSession(report,
                 (status) =>
                 {
+                    reportLedger.Confirm(entry);
                     if (status != null)
                     {
                         serverReportedDemo = status.demo_used_seconds;
@@ -1661,12 +1697,13 @@ namespace VRLicensing
                         if (reset) ReopenDemoIfAvailable("admin demo reset"); // same path for a reset received mid-run
                     }
                 },
-                (error) =>
+                (error, outcomeUnknown) =>
                 {
-                    Debug.LogWarning($"[VR Licensing] Session report failed: {error}");
+                    reportLedger.Fail(entry, outcomeUnknown);
+                    Debug.LogWarning($"[VR Licensing] Session report failed: {error}" +
+                                     (outcomeUnknown ? " (unconfirmed: the server total is re-read before the next report)" : ""));
                     storeEvents?.Restore(events); // keep the events for the next report (persisted)
-                },
-                events
+                }
             );
 
             reportInFlight = false;

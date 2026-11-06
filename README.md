@@ -12,6 +12,7 @@ Generic licensing and key registration module for VR simulators on Meta Quest. I
 - 🔒 **Encrypted storage** (AES-256 with device-derived key + HMAC-SHA256 integrity seal)
 - 🕐 **Anti-clock tampering** (NTP-based clock rollback detection)
 - 📊 **Session time tracking** using `Time.unscaledTime`
+- ⏲️ **Demo clock that only counts play time** — it holds while the app is paused or unfocused, the headset is off or frames stop, and it stops at the limit (v1.12.0-pre.16)
 - 📡 **Server-side device registry** — survives factory resets; prevents demo abuse
 - 🔌 **Auto-initialization** (`RuntimeInitializeOnLoadMethod`) — Plug & Play
 - ⚙️ **ScriptableObject configuration** — each simulator has its own config
@@ -151,10 +152,39 @@ While any panel is up the UI builder disables every `BaseRaycaster` outside the 
 keyboard, in the whole scene, and rescans about once a second. That is deliberate: a tester once
 started an app through its own menu without touching demo or license. The panels therefore show the
 headset's language (or a language the host set beforehand through `LanguageOverride`) until the
-student closes them, and the host's menu works again afterwards. A locale the package has no strings
+student closes them, and the host's menu works again afterwards. **Panels must be dismissed before
+the app's own menus can be used**: start the demo, redeem a key, or close the plans / feedback
+panel. Do not put a control the user needs at that moment (a language selector, a quit button)
+behind the gate; set the language through `LanguageOverride` instead. A locale the package has no strings
 for (see `SupportedLanguages`) falls back to the headset's language in the same way.
 
 Unknown license statuses (e.g. `revoked`) deserialize without error and are treated as "not valid" with the server's message; an online re-validation that returns any verdict other than a connection error drops the cached license immediately.
+
+### Device telemetry and demo counting (v1.12.0-pre.16)
+
+Every `report_device_session` carries, besides the demo delta:
+
+| Parameter | Value |
+|---|---|
+| `p_report_id` | A new uuid per report. The server adds nothing for an id it has already seen. |
+| `p_app_version` | `LicenseManager.AppVersion` if the host set it, else `Application.version`. Set it at startup to `"<bundleVersion> (<versionCode>)"`, e.g. `"1.0.0 (31)"`, so the admin shows the build. |
+| `p_upm_version` | `PackageVersion.Value`, generated from `package.json`. |
+| `p_license_state` | `demo`, `demo_expired`, `licensed`, `store_subscribed` or `blocked`. |
+| `p_locale` | The language the license UI is showing (`LicenseStrings.CurrentLanguage`). |
+
+```csharp
+// Host app, before the first scene (e.g. RuntimeInitializeOnLoadMethod):
+VRLicensing.LicenseManager.AppVersion = "1.0.0 (31)";
+```
+
+A server that has not been migrated answers function-not-found to the new parameters; the report
+is sent once more without them and the rest of the run skips them. No user id, e-mail or Meta
+account is ever sent.
+
+The demo clock counts frames, not wall time: nothing is added while the app is paused or has no
+focus, while the headset is not worn, or for a single frame longer than 3 seconds, and the total
+stops at the limit. After a report that timed out the client re-reads the server total before
+reporting again, so the same time is never sent twice.
 
 ## Testing with Sandbox Licenses
 
