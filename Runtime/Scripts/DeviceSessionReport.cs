@@ -31,7 +31,7 @@ namespace VRLicensing
         public string appVersion;
         /// <summary>Version of this package, from package.json (max 20).</summary>
         public string upmVersion;
-        /// <summary>demo | demo_expired | licensed | store_subscribed | blocked (see <see cref="LicenseStateCode"/>).</summary>
+        /// <summary>demo | demo_expired | licensed | license_expired | store_subscribed | blocked (see <see cref="LicenseStateCode"/>).</summary>
         public string licenseState;
         /// <summary>Language the license UI is showing, BCP-47 (max 10).</summary>
         public string locale;
@@ -78,23 +78,35 @@ namespace VRLicensing
         }
     }
 
-    /// <summary>Value of <c>p_license_state</c> (spec 11 §3: CHECK on these five values).</summary>
+    /// <summary>Value of <c>p_license_state</c> (spec 11 §3: CHECK on these six values).</summary>
     public static class LicenseStateCode
     {
         public const string Demo = "demo";
         public const string DemoExpired = "demo_expired";
         public const string Licensed = "licensed";
+        public const string LicenseExpired = "license_expired";
         public const string StoreSubscribed = "store_subscribed";
         public const string Blocked = "blocked";
 
         /// <summary>
-        /// Maps the client state. An unlocked headset says how it is unlocked whatever else is
-        /// true; otherwise an admin block wins. <see cref="LicenseState.Unlicensed"/> (welcome
-        /// panel, demo not started or paused) is "demo". <see cref="LicenseState.Expired"/> is
-        /// "demo_expired" for a demo AND for a key or subscription that ran out: the server has no
-        /// separate value for the latter. <see cref="LicenseState.ClockTampered"/> reports nothing.
+        /// Maps the client state, most specific first:
+        /// <list type="bullet">
+        /// <item>an unlocked headset says how it is unlocked (<c>licensed</c>, <c>store_subscribed</c>);</item>
+        /// <item><see cref="LicenseState.Expired"/> because a key or a store subscription ran out
+        /// (or was revoked) is <c>license_expired</c> — the panel shown is the license-expired
+        /// one, whatever the demo's own state;</item>
+        /// <item>otherwise an admin block of the demo is <c>blocked</c>;</item>
+        /// <item><see cref="LicenseState.Expired"/> for the demo is <c>demo_expired</c>;</item>
+        /// <item><see cref="LicenseState.Unlicensed"/> (welcome panel, demo not started or
+        /// paused) and <see cref="LicenseState.Demo"/> are <c>demo</c>;</item>
+        /// <item><see cref="LicenseState.ClockTampered"/> reports nothing.</item>
+        /// </list>
         /// </summary>
-        public static string For(LicenseState state, bool demoBlocked)
+        /// <param name="state">Client state.</param>
+        /// <param name="demoBlocked">The server blocked this headset's demo.</param>
+        /// <param name="licenseExpiry">With <see cref="LicenseState.Expired"/>: true when a key or
+        /// subscription ended, false when the demo did.</param>
+        public static string For(LicenseState state, bool demoBlocked, bool licenseExpiry)
         {
             switch (state)
             {
@@ -102,6 +114,7 @@ namespace VRLicensing
                 case LicenseState.SubscribedViaStore: return StoreSubscribed;
                 case LicenseState.ClockTampered: return null;
             }
+            if (state == LicenseState.Expired && licenseExpiry) return LicenseExpired;
             if (demoBlocked) return Blocked;
             return state == LicenseState.Expired ? DemoExpired : Demo;
         }

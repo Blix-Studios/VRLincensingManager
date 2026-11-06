@@ -1677,7 +1677,7 @@ namespace VRLicensing
             report.reportId = entry.id;
             report.appVersion = EffectiveAppVersion;
             report.upmVersion = PackageVersion.Value;
-            report.licenseState = LicenseStateCode.For(CurrentState, demoBlockedByServer);
+            report.licenseState = LicenseStateCode.For(CurrentState, demoBlockedByServer, isLicenseExpiry);
             report.locale = LicenseStrings.CurrentLanguage; // the language the license UI is showing
 
             yield return supabaseClient.ReportDeviceSession(report,

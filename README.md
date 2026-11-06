@@ -169,7 +169,7 @@ Every `report_device_session` carries, besides the demo delta:
 | `p_report_id` | A new uuid per report. The server adds nothing for an id it has already seen. |
 | `p_app_version` | `LicenseManager.AppVersion` if the host set it, else `Application.version`. Set it at startup to `"<bundleVersion> (<versionCode>)"`, e.g. `"1.0.0 (31)"`, so the admin shows the build. |
 | `p_upm_version` | `PackageVersion.Value`, generated from `package.json`. |
-| `p_license_state` | `demo`, `demo_expired`, `licensed`, `store_subscribed` or `blocked`. |
+| `p_license_state` | `demo`, `demo_expired`, `licensed`, `license_expired` (a key or subscription ran out), `store_subscribed` or `blocked`. |
 | `p_locale` | The language the license UI is showing (`LicenseStrings.CurrentLanguage`). |
 
 ```csharp

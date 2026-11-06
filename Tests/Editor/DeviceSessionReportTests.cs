@@ -82,15 +82,22 @@ namespace VRLicensing.Tests
         [Test]
         public void LicenseStateMapping()
         {
-            Assert.AreEqual("demo", LicenseStateCode.For(LicenseState.Demo, false));
-            Assert.AreEqual("demo", LicenseStateCode.For(LicenseState.Unlicensed, false), "welcome panel: demo not started / paused");
-            Assert.AreEqual("demo_expired", LicenseStateCode.For(LicenseState.Expired, false));
-            Assert.AreEqual("licensed", LicenseStateCode.For(LicenseState.Licensed, false));
-            Assert.AreEqual("store_subscribed", LicenseStateCode.For(LicenseState.SubscribedViaStore, false));
-            Assert.AreEqual("blocked", LicenseStateCode.For(LicenseState.Unlicensed, true));
-            Assert.AreEqual("blocked", LicenseStateCode.For(LicenseState.Expired, true));
-            Assert.AreEqual("licensed", LicenseStateCode.For(LicenseState.Licensed, true), "an unlocked headset says how it is unlocked");
-            Assert.IsNull(LicenseStateCode.For(LicenseState.ClockTampered, false));
+            Assert.AreEqual("demo", LicenseStateCode.For(LicenseState.Demo, false, false));
+            Assert.AreEqual("demo", LicenseStateCode.For(LicenseState.Unlicensed, false, false), "welcome panel: demo not started / paused");
+            Assert.AreEqual("demo_expired", LicenseStateCode.For(LicenseState.Expired, false, false), "the demo ran out");
+            Assert.AreEqual("license_expired", LicenseStateCode.For(LicenseState.Expired, false, true), "a key or a subscription ran out");
+            Assert.AreEqual("license_expired", LicenseStateCode.For(LicenseState.Expired, true, true), "more specific than the demo block");
+            Assert.AreEqual("licensed", LicenseStateCode.For(LicenseState.Licensed, false, false));
+            Assert.AreEqual("store_subscribed", LicenseStateCode.For(LicenseState.SubscribedViaStore, false, false));
+            Assert.AreEqual("blocked", LicenseStateCode.For(LicenseState.Unlicensed, true, false));
+            Assert.AreEqual("blocked", LicenseStateCode.For(LicenseState.Expired, true, false));
+            Assert.AreEqual("licensed", LicenseStateCode.For(LicenseState.Licensed, true, false), "an unlocked headset says how it is unlocked");
+            Assert.AreEqual("demo", LicenseStateCode.For(LicenseState.Demo, false, true), "a stale expiry flag does not leak into other states");
+            Assert.IsNull(LicenseStateCode.For(LicenseState.ClockTampered, false, false));
+
+            // The six values the server's CHECK accepts (spec 11 §3), each within the cap.
+            foreach (string code in new[] { "demo", "demo_expired", "licensed", "license_expired", "store_subscribed", "blocked" })
+                Assert.LessOrEqual(code.Length, DeviceSessionReport.MaxLicenseStateLength);
         }
 
         [Test]

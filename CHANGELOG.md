@@ -38,11 +38,13 @@ optional parameters). Built on pre.15, whose tag (2eea18d, layout fix only) is n
   over-counted total from an older build reports at most what is left up to the limit.
 - **New report fields** (`DeviceSessionReport`): `p_app_version` (`LicenseManager.AppVersion`,
   default `Application.version`; hosts set "1.0.0 (31)"), `p_upm_version` (`PackageVersion.Value`),
-  `p_license_state` (`demo` | `demo_expired` | `licensed` | `store_subscribed` | `blocked`) and
-  `p_locale` (the language the license UI shows). Empty values are omitted.
-  - `Unlicensed` (welcome panel) reports `demo`; `Expired` reports `demo_expired` for a demo and
-    for a key/subscription that ran out (the server has no separate value); `ClockTampered`
-    reports nothing; an admin block reports `blocked` unless the headset is unlocked.
+  `p_license_state` (`demo` | `demo_expired` | `licensed` | `license_expired` |
+  `store_subscribed` | `blocked`) and `p_locale` (the language the license UI shows). Empty
+  values are omitted.
+  - `license_expired` (sixth value, decided 2026-11-06): a key or a store subscription ran out or
+    was revoked. `demo_expired` is for the demo only. `Unlicensed` (welcome panel) reports
+    `demo`; an admin block of the demo reports `blocked` unless the headset is unlocked or its
+    licence expired (the more specific state wins); `ClockTampered` reports nothing.
   - **Old servers keep working**: a server that does not know the parameters answers PostgREST
     function-not-found (404 / PGRST202); the same report is sent once more without them and the
     rest of the run skips them (`SupabaseClient.ExtendedReportSupported`).
