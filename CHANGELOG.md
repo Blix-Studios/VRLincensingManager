@@ -3,6 +3,64 @@
 All notable changes to `com.blixstudios.vr-licensing`. Pre-release tags (`vX.Y.Z-pre.N`) are
 test builds for VirtualChainsaw; the final tag is cut only after QA on the headset.
 
+## 1.12.0-pre.17 — 2026-11-13
+
+Blockers from VR-Forklift batch 1 QA. Contract `03-LICENSING-CONTRACT.md` §2 is unchanged: this
+release removes the last places where the client did not follow it.
+
+- **Free store apps (no subscription SKU).** A store build whose `storeSubscriptionSku` is empty
+  showed "Subscribe" on the welcome panel and opened an empty plans panel. Now such a build has
+  no subscribe or plans entry point at all (`StoreOffers`): no button on the welcome panel, no
+  plans panel, no plans column on the demo-expired and license-expired panels (they show the
+  neutral "ask your organisation for a key" hint), `ShowPlans()` and `SubscribeViaStore()` do
+  nothing, the boot subscription lookup is skipped and no `plans_opened` / checkout event is
+  queued. `LicenseManager.StoreOffersEnabled` is false, which is what the pause-menu helpers of
+  VirtualChainsaw and VR-Forklift already gate on. A store build never shows the web purchase
+  CTA (URL, QR, price), with or without a SKU, whatever `showPurchaseCta` says.
+- **Security: no direct table access left.** When `get_license_branding` failed or was missing,
+  the package read the `license_branding` table directly with the anon key; `report_telemetry`
+  had the same kind of fallback inserting into `device_telemetry`. Both fallbacks are removed
+  (`SupabaseClient.FetchBranding` and `SendTelemetry` no longer exist): the client only calls
+  SECURITY DEFINER RPCs. When the branding call fails for any reason, the branding kept on the
+  device from the last good answer is used (name and logo file, `BrandingCache`); with no cache
+  there is no branding. A rate-limited or "license not valid" answer counts as a failure, so it
+  cannot wipe a client's branding; "none configured" from the server clears the cache.
+  Both functions are in migration `20261013100000_licensing_v1_12_store_entitlements.sql`,
+  confirmed applied on the production project (`supabase migration list`, 2026-11-13).
+  `BrandingTests.RuntimeNeverTouchesATable` fails the suite if a `/rest/v1/<table>` URL or a
+  table name ever comes back into the runtime sources.
+- **Branding decals on URP 17.** `BrandingDecalApplier` only tried the configured property
+  (`_Base_Map`); URP 17's decal Shader Graph calls it `Base_Map`, so nothing was applied
+  (VirtualChainsaw's decals). Appliers now look on the material for `_Base_Map`, `Base_Map`,
+  `_BaseMap`, `_MainTex` after the configured name.
+- **Branding images keep their shape and their transparency.** The logo is fitted to the
+  surface, whole and with its own aspect ratio (`BrandingTexture.Fit`): decals use the
+  projector's width / height and stay transparent around the logo; meshes use the shape of the
+  texture the material had (or `aspectOverride`) and, on an opaque material, composite the logo
+  over `backgroundColor` (white by default) — a transparent PNG no longer shows black; UI
+  Images use `preserveAspect`. Options `fitLogo` / `preserveAspect` (default ON) give the old
+  stretch back. Appliers also listen for later branding answers instead of only the first one.
+- **Default app version.** `p_app_version` is "<Application.version> (<versionCode>)", the
+  code read from the installed APK, when the host does not set `LicenseManager.AppVersion`
+  (`LicenseBuildInfo`). The per-project helpers (VR-Forklift `LicenseAppVersion`, Chainsaw
+  `AppVersionInfo`) keep working — a host value wins — and can be deleted.
+- **Arabic, Japanese, Korean and Urdu** in every license-UI string (16 languages;
+  `LicenseStringsExtraLanguages.cs`). Arabic and Urdu are shaped by the package (`RtlText`:
+  contextual forms, lam-alef, Latin and digits kept readable, brackets mirrored, rich-text tags
+  untouched) and their labels switch to TextMeshPro's right-to-left mode, so they wrap
+  correctly; no shaping plugin is needed, only a font with the Arabic presentation forms.
+  Text already shaped by a host's own fixer is recognised and drawn as it is.
+- **Labels are never left empty.** In VR-Forklift the Arabic locale swapped TMP's default font
+  for one without Latin glyphs while the package had no Arabic strings: the labels held English
+  text in a font that could not draw it. A label now takes the first font that can draw its
+  text — its own, TMP's current default, the font the UI was built with — and English when no
+  font has the language (`LabelFallback`).
+
+Tests: 180 EditMode tests (103 before). New: `StoreOffersTests` (both configs on the real UI),
+`BrandingTests`, `AppVersionTests`, `ExtraLanguagesTests`. Renders of the welcome panel with
+and without SKU and of the Arabic / Urdu / Japanese / Korean panels were checked by eye.
+Not verified on a headset: the versionCode read (Android only) and the fonts of each project.
+
 ## 1.12.0-pre.16 — 2026-11-06
 
 Device telemetry and demo counting (spec `11-DEVICE-TELEMETRY.md` §6; contract §2 item 3 gains
