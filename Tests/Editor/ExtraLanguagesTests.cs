@@ -282,6 +282,10 @@ namespace VRLicensing.Tests
             return builder;
         }
 
+#pragma warning disable 618
+        private static bool Kerning(TMP_Text label) => label.enableKerning;
+#pragma warning restore 618
+
         [Test]
         public void EveryLabelShapesArabic_AndFollowsItsTextIntoRtlMode()
         {
@@ -296,12 +300,16 @@ namespace VRLicensing.Tests
 
             var title = labels.First(l => l.name == "WelcomeSubtitle");
             var sync = typeof(LicenseUIBuilder).GetMethod("SyncRtl", BindingFlags.Instance | BindingFlags.NonPublic);
+            bool kerningAtStart = Kerning(title);
+
             title.text = "اختر خيارًا للمتابعة";
             sync.Invoke(builder, null);
             Assert.IsTrue(title.isRightToLeftText);
+            Assert.IsFalse(Kerning(title), "no pair kerning in right-to-left layout: TMP applies it the wrong way round");
 
             title.text = "Select an option to continue";
             sync.Invoke(builder, null);
+            Assert.AreEqual(kerningAtStart, Kerning(title), "the label's own kerning setting is back");
             Assert.IsFalse(title.isRightToLeftText, "back to left-to-right with Latin text");
         }
 

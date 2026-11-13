@@ -1446,13 +1446,78 @@ namespace VRLicensing
             {
                 var label = rtlLabels[i];
                 if (label == null) continue;
-                string text = label.text;
-                if (ReferenceEquals(text, rtlSeenText[i])) continue;
-                rtlSeenText[i] = text;
 
-                bool rtl = RtlText.IsRtl(text);
-                if (label.isRightToLeftText != rtl) label.isRightToLeftText = rtl;
+                string text = label.text;
+                if (!ReferenceEquals(text, rtlSeenText[i]))
+                {
+                    rtlSeenText[i] = text;
+
+                    bool rtl = RtlText.IsRtl(text);
+                    if (label.isRightToLeftText != rtl) label.isRightToLeftText = rtl;
+                    SetKerning(label, !rtl);
+
+                    // A new text gets the label's normal behaviour back (see below).
+                    if (rescued.Remove(label)) label.overflowMode = TextOverflowModes.Ellipsis;
+                }
+
+                RescueIfInvisible(label);
             }
+        }
+
+        private readonly System.Collections.Generic.HashSet<TextMeshProUGUI> kerningOff =
+            new System.Collections.Generic.HashSet<TextMeshProUGUI>();
+
+        /// <summary>
+        /// No pair kerning while a label is laid out right to left (v1.12.0-pre.18). TMP applies
+        /// a pair's adjustment as if the text ran left to right, so with a face that has kerning
+        /// (Noto Sans Arabic: reh + kaf, reh + meem…) the first letter of the pair lands on top
+        /// of the second. The label's own setting comes back with left-to-right text.
+        /// </summary>
+        private void SetKerning(TextMeshProUGUI label, bool leftToRight)
+        {
+#pragma warning disable 618 // enableKerning: the one switch every supported TMP version has
+            if (!leftToRight)
+            {
+                if (label.enableKerning)
+                {
+                    label.enableKerning = false;
+                    kerningOff.Add(label);
+                }
+            }
+            else if (kerningOff.Remove(label))
+            {
+                label.enableKerning = true;
+            }
+#pragma warning restore 618
+        }
+
+        private readonly System.Collections.Generic.HashSet<TextMeshProUGUI> rescued =
+            new System.Collections.Generic.HashSet<TextMeshProUGUI>();
+
+        /// <summary>
+        /// Last resort (v1.12.0-pre.18): a label that has text but draws none of it — not even
+        /// one line fits its rect at the smallest size — is switched from Ellipsis to Overflow,
+        /// so the text is drawn across the rect's edge instead of not at all.
+        /// </summary>
+        private void RescueIfInvisible(TextMeshProUGUI label)
+        {
+            if (label.overflowMode != TextOverflowModes.Ellipsis || !label.isTextOverflowing) return;
+            if (!label.gameObject.activeInHierarchy || !DrawsNothing(label)) return;
+
+            label.overflowMode = TextOverflowModes.Overflow;
+            rescued.Add(label);
+        }
+
+        /// <summary>The label holds visible text and none of its characters is drawn.</summary>
+        internal static bool DrawsNothing(TMP_Text label)
+        {
+            string text = label.text;
+            if (string.IsNullOrWhiteSpace(text)) return false;
+            TMP_TextInfo info = label.textInfo;
+            if (info == null) return false;
+            for (int i = 0; i < info.characterCount && i < info.characterInfo.Length; i++)
+                if (info.characterInfo[i].isVisible) return false;
+            return true;
         }
 
         private static void SetLocalized(TMP_Text label, string text, string english)
@@ -2716,6 +2781,10 @@ namespace VRLicensing
             ph.alignment = freeText ? TextAlignmentOptions.MidlineLeft : TextAlignmentOptions.Center;
             ph.enableWordWrapping = false;
             ph.overflowMode = TextOverflowModes.Ellipsis;
+            // Same rule as every other label (pre.18): shrink to fit rather than not be drawn.
+            ph.enableAutoSizing = true;
+            ph.fontSizeMax = ph.fontSize;
+            ph.fontSizeMin = MinFontSize(ph.fontSize);
             SetRectFill(ph.rectTransform);
 
             // Input text
@@ -2843,6 +2912,13 @@ namespace VRLicensing
             tmp.alignment = alignment;
             tmp.enableWordWrapping = true;
             tmp.overflowMode = TextOverflowModes.Ellipsis;
+            // v1.12.0-pre.18: every label may shrink to fit its rect. The rects are sized for
+            // Latin type; a font with a taller line (Arabic faces need about twice the font size
+            // per line) did not fit a single line in a title rect, and with Ellipsis TMP then
+            // draws nothing at all. A label that fits keeps its design size.
+            tmp.enableAutoSizing = true;
+            tmp.fontSizeMax = fontSize;
+            tmp.fontSizeMin = MinFontSize(fontSize);
             tmp.raycastTarget = false;
 
             var rt = tmp.rectTransform;
@@ -2876,6 +2952,12 @@ namespace VRLicensing
             label.enableAutoSizing = true;
             label.fontSizeMax = max;
             label.fontSizeMin = min;
+        }
+
+        /// <summary>Smallest size a label may shrink to: 55 % of its design size, never under 7.</summary>
+        internal static float MinFontSize(float designSize)
+        {
+            return Mathf.Max(7f, Mathf.Floor(designSize * 0.55f));
         }
 
         private Button CreatePositionedButton(string name, RectTransform parent,
