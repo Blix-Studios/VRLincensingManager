@@ -3,6 +3,66 @@
 All notable changes to `com.blixstudios.vr-licensing`. Pre-release tags (`vX.Y.Z-pre.N`) are
 test builds for VirtualChainsaw; the final tag is cut only after QA on the headset.
 
+## 1.12.0-pre.19 — 2026-11-13
+
+> **Do not pin `v1.12.0-pre.18`.** That tag exists on origin but points at commit 97fbd7c, whose
+> `package.json` and `PackageVersion` still say 1.12.0-pre.17: the release script failed before the
+> version commit and the tag command ran anyway. Tags are never moved, so the same code is released
+> here as pre.19 with the version bumped in the tagged commit. Comments in the sources that say
+> "pre.18" refer to this work.
+
+- **Branding appliers never modify a shared material asset.** pre.17 made the decal applier
+  find the right property (`Base_Map`), and with that it started writing the client's logo
+  into the projector's material — the project's asset. In the Editor that outlives Play mode:
+  VirtualChainsaw's `LogoDecal_MAT.mat` was saved with `Base_Map` empty after one Play session
+  with a logo (found while verifying build 32; no build was affected, a player never saves
+  assets, but a commit of that file would have removed the default logo).
+  - `BrandingDecalApplier` now puts a runtime copy of the material on its Decal Projector
+    (`BrandingMaterials`: one copy per original material + property + texture, shared by the
+    appliers that need the same, flagged `DontSave`) and never calls `SetTexture` on the asset.
+  - `BrandingMeshApplier` keeps the MaterialPropertyBlock path (nothing but the renderer
+    changes); with `useMaterialPropertyBlock` off it uses the same kind of copy through
+    `sharedMaterials` instead of `renderer.materials`, whose instances were never destroyed.
+  - On `OnDestroy` (and `RestoreOriginal()`) the projector / renderer gets its original
+    material back and the copy is released; it is destroyed with its last user. Giving the
+    original back is only the safety net: the asset was never written in the first place.
+  - `BrandingImageApplier` only ever changed its own `Image`; unchanged.
+  - **Behaviour change**: only projectors that carry a `BrandingDecalApplier` show the logo.
+    Before, every decal sharing the material showed it, because the material itself changed.
+  - `ApplyLogo(Texture2D)` is public on the decal and mesh appliers.
+  - Test `BrandingMaterialSafetyTests.PlayMode_WithAClientLogo_LeavesTheMaterialAssetsOnDiskUnchanged`:
+    creates a decal material and two banner materials on disk, enters Play mode, applies a
+    logo through a real Decal Projector and both mesh paths, leaves Play mode, forces a save
+    and compares the `.mat` files byte for byte. The decal part needs the Universal RP
+    package (inconclusive without it; the banner part always runs).
+- **Labels that were not drawn in Arabic and Urdu** (VR-Forklift QA on pre.17,
+  `DEFECT-pre17-ar-ur-expired-titles.md`). The column titles of the demo-expired panel
+  (`ExpOrgTitle`, `ExpRedeemTitle`) showed nothing: a 16 pt line of Noto Sans Arabic needs
+  33.8 units (2.11 x the font size), the rects are 26 high, and TextMeshPro's Ellipsis mode
+  draws nothing when not even one line fits. Fixed as a pattern, not per label:
+  - every label created by the license UI, input placeholders included, may now shrink to
+    fit (auto-size from its design size down to 55 %, never under 7 pt); a label that fits
+    keeps its size. With that face the titles are 12.3 pt instead of 16, `KeySubtitle` 11.8
+    instead of 13;
+  - last resort: a label that still draws none of its text is switched from Ellipsis to
+    Overflow, so the text crosses the rect's edge instead of not being drawn.
+  - `LabelFitTests`: every label of every panel, in the 16 languages and the three build
+    variants (store with SKU, free store app, direct APK), must draw at least one character
+    and not overflow — once with the fonts' own metrics and once with the line as tall as the
+    face that showed the bug (there: nothing invisible, and the reported titles fit). With the
+    fix switched off the tall-line cases fail on exactly the reported labels (`ExpOrgTitle`,
+    `ExpRedeemTitle`, `LicExpRedeemTitle`, the store column titles, `ExpBuyTitle`) plus the
+    input placeholders. The tests use system fonts and are skipped where those are missing.
+- **Right-to-left labels have pair kerning off.** Found while rendering with VR-Forklift's
+  own faces: TextMeshPro applies a kerning pair as if the text ran left to right, so with a
+  face that carries kerning (Noto Sans Arabic loaded as a dynamic font: reh + kaf, reh +
+  meem…) the reh was drawn on top of the next letter ("للشركات"). Kerning is switched off
+  while a label is in right-to-left mode and comes back with left-to-right text.
+- **Urdu**: a license key is now «کلید» in all 19 strings that mention one. The loanword
+  «کی» reads as the genitive particle ("کیا آپ کے پاس لائسنس کلید ہے؟").
+
+Tests: 284 EditMode tests (180 in pre.17).
+
 ## 1.12.0-pre.17 — 2026-11-13
 
 Blockers from VR-Forklift batch 1 QA. Contract `03-LICENSING-CONTRACT.md` §2 is unchanged: this

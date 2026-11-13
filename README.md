@@ -177,6 +177,12 @@ Decal Projector, a mesh and a UI Image.
   material (a banner) the logo is composited over `backgroundColor` (white by default), so a transparent PNG
   no longer shows black.
 - Appliers of the same shape share one fitted texture; a new logo releases the old ones.
+- **The material assets are never modified** (v1.12.0-pre.19). The decal applier puts a runtime copy of
+  the material on its projector and the mesh applier uses a MaterialPropertyBlock (or a copy when
+  `useMaterialPropertyBlock` is off); both give the original back when they are destroyed. Playing in
+  the Editor with a client logo therefore leaves the `.mat` files alone. Only projectors that carry a
+  `BrandingDecalApplier` show the logo: a decal that merely shares the material no longer does.
+  `ApplyLogo(Texture2D)` / `RestoreOriginal()` are public for hosts and tests.
 
 ### Languages and right-to-left text (v1.12.0-pre.17)
 
@@ -190,6 +196,13 @@ it (its own, TMP's current default, or the font the UI was built with) rather th
 swaps the default font per language no longer blanks the license panels. A host that runs its own Arabic
 fixer over every label in the scene does not break them either: text it has already shaped is recognised and
 drawn as it is. Urdu has no `SystemLanguage` value, so it is only selected through `LanguageOverride = "ur"`.
+
+Every label may shrink to fit its rect (v1.12.0-pre.19: auto-size from the design size down to 55 %, never
+under 7 pt). The rects are sized for Latin type; a face with a taller line — Noto Sans Arabic needs 2.1 x the
+font size per line — did not fit one line in a title rect and TextMeshPro then drew nothing. With such a face
+the titles come out smaller (16 pt → about 12 pt) instead of disappearing, and a label that still cannot show
+one line is drawn across its rect rather than not at all. Labels laid out right to left have pair kerning off:
+TextMeshPro applies it the wrong way round there.
 
 ### Device telemetry and demo counting (v1.12.0-pre.16)
 
