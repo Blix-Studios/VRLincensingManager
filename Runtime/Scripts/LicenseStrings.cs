@@ -7,13 +7,14 @@ namespace VRLicensing
     /// <summary>
     /// Every user-facing string of the license UI in the user's language (12 languages since
     /// v1.12.0-pre.12: + Dutch; the whole UI since v1.12.0-pre.14 — before that only the device
-    /// code label, the subscription panel, feedback and the exit survey were localized).
+    /// code label, the subscription panel, feedback and the exit survey were localized; 16 since
+    /// v1.12.0-pre.17: + Arabic, Japanese, Korean and Urdu, in LicenseStringsExtraLanguages.cs).
     /// Language: <see cref="LanguageOverride"/> if the host app sets it from its own selector,
     /// otherwise the headset's system language. Codes are ISO 639-1. "license" uses US spelling.
     /// Forms of address follow each language's existing rows: tú / tu / você / du / sinä / je,
     /// vous / Sie / вы / 您 / आप.
     /// </summary>
-    public static class LicenseStrings
+    public static partial class LicenseStrings
     {
         /// <summary>
         /// Optional ISO 639-1 code ("es", "pt", ...) set by the host app when it has its own
@@ -36,7 +37,7 @@ namespace VRLicensing
         public static event Action LanguageChanged;
 
         public static readonly string[] SupportedLanguages =
-            { "en", "es", "fr", "de", "it", "pt", "ru", "zh", "hi", "fi", "sv", "nl" };
+            { "en", "es", "fr", "de", "it", "pt", "ru", "zh", "hi", "fi", "sv", "nl", "ar", "ja", "ko", "ur" };
 
         private static readonly Dictionary<string, string> DeviceCodeLabels = new Dictionary<string, string>
         {
@@ -141,6 +142,10 @@ namespace VRLicensing
                 case SystemLanguage.Finnish: return "fi";
                 case SystemLanguage.Swedish: return "sv";
                 case SystemLanguage.Dutch: return "nl";
+                case SystemLanguage.Arabic: return "ar";
+                case SystemLanguage.Japanese: return "ja";
+                case SystemLanguage.Korean: return "ko";
+                // Urdu has no SystemLanguage value: it comes from LanguageOverride ("ur").
                 default: return "en";
             }
         }
@@ -372,7 +377,8 @@ namespace VRLicensing
             Dictionary<string, string[]> words = unit == "week" ? WeekWords : unit == "month" ? MonthWords : YearWords;
             string[] forms = words.TryGetValue(lang, out var f) ? f : words["en"];
             string word = Plural(forms, total, lang);
-            if (lang == "zh") return total + word; // 3个月, 1年
+            if (lang == "zh" || lang == "ja" || lang == "ko") return total + word; // 3个月, 3か月, 3개월
+            if (lang == "ar" && total == 2) return word;                          // the dual says "two" by itself
             return total + " " + word;
         }
 
@@ -384,6 +390,13 @@ namespace VRLicensing
                 if (mod10 == 1 && mod100 != 11) return forms[0];
                 if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return forms[1];
                 return forms[2];
+            }
+            if (lang == "ar" && forms.Length >= 4)
+            {
+                // Arabic: 1 singular, 2 dual, 3-10 plural, 11 and more singular (accusative).
+                if (n == 1) return forms[0];
+                if (n == 2) return forms[2];
+                return n <= 10 ? forms[1] : forms[3];
             }
             if (lang == "fr" && n < 2) return forms[0]; // French: singular below 2
             return n == 1 ? forms[0] : forms[Math.Min(1, forms.Length - 1)];

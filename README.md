@@ -16,7 +16,7 @@ Generic licensing and key registration module for VR simulators on Meta Quest. I
 - 📡 **Server-side device registry** — survives factory resets; prevents demo abuse
 - 🔌 **Auto-initialization** (`RuntimeInitializeOnLoadMethod`) — Plug & Play
 - ⚙️ **ScriptableObject configuration** — each simulator has its own config
-- 🌐 **Localized license UI** — every panel, button and message in 12 languages (en, es, fr, de, it, pt, ru, zh, hi, fi, sv, nl), following the host app's selector or the headset language
+- 🌐 **Localized license UI** — every panel, button and message in 16 languages (en, es, fr, de, it, pt, ru, zh, hi, fi, sv, nl, ar, ja, ko, ur; Arabic and Urdu are shaped and laid out right to left by the package), following the host app's selector or the headset language
 
 ## Installation
 
@@ -87,6 +87,7 @@ Spec: `06-LICENSING-V1.12-SPEC.md` (VRInstructorRef). Everything below is additi
 |---|---|
 | `LicenseConfig.storePlatform` | `None` (default) · `MetaHorizon` · `Steam` (phase 2, behaves as None). |
 | `LicenseConfig.storeSubscriptionSku` / `storeTerms` | Meta models a subscription as **one SKU per tier** (`sub_access`) with **terms** as billing plans. Terms use Meta's `OfferTerm` tokens: `MONTHLY`, `SEMIANNUAL`, `ANNUAL` (also WEEKLY, BIWEEKLY, QUARTERLY, BIANNUAL). Checkout string: `{sku}:SUBSCRIPTION__{TERM}`. Prices come from `IAP.GetProductsBySKU` → `BillingPlan.PaidOffer.Price`; none are in code. The panel shows ANNUAL first and a localized benefits line; the localized "Best value" badge appears on ANNUAL only when its price per month is strictly below every other configured term, computed from the store's prices (hidden if any price is unreadable). |
+| Free apps (no SKU) | Leave `storeSubscriptionSku` **empty** in a store build of a free app. The build then has nothing to sell: no "Subscribe" button on the welcome panel, no plans panel or plans column on the expired panels, `ShowPlans()` and `SubscribeViaStore()` do nothing, the boot subscription lookup is skipped and `LicenseManager.StoreOffersEnabled` is false (gate your own pause-menu button on it). The entitlement check still runs. A store build never shows the web purchase CTA, whatever `showPurchaseCta` says (v1.12.0-pre.17). |
 | Boot subscription check | With `MetaHorizon` the signed-in account's subscription is checked on **every** launch before the demo can start (a user may subscribe from the store page); a subscriber never sees the countdown or the paywall. Unlock still requires the server's verdict. |
 | Editor store stub | *Tools > Blix Studios > Licensing > Editor store stub (toggle)*: fake store + fake server verification to exercise the whole flow in Play mode (plans → checkout → verify → `SubscribedViaStore` → cache). Never compiled into players. |
 | Release check | A non-development build with `storePlatform = MetaHorizon` and `enforceEntitlement` OFF **fails** with a clear message. |
@@ -95,8 +96,8 @@ Spec: `06-LICENSING-V1.12-SPEC.md` (VRInstructorRef). Everything below is additi
 | Boot (MetaHorizon) | Platform init + entitlement check within 10 s → cached key → cached store subscription → (phase B) server verification. Failures are logged; the app continues in demo/key mode unless `enforceEntitlement` is ON. |
 | Expired panels | Left column: Monthly / 6 months / Annual buttons with the store's localized prices (`IAP.GetProductsBySKU`); right column: license key. No URL, QR, external price or promo. If the store reports no products, the key column takes the centre and a console line says why. |
 | `LicenseState.SubscribedViaStore` | Equivalent to `Licensed` for gating; no client branding. Cached encrypted until `min(expiresAt + 3 days grace, verifiedAt + maxOfflineHours)`. |
-| Device code | `Device code: XXXXX-XXXXX` at the foot of every license panel, in 12 languages: first 10 hex chars (uppercase) of SHA-256 over the UTF-8 bytes of `SystemInfo.deviceUniqueIdentifier` — the exact string sent as `p_device_id`. |
-| Branding / telemetry | Now through `get_license_branding` / `report_telemetry` RPCs; falls back to the pre-1.12 direct table access while they return 404 (not deployed). |
+| Device code | `Device code: XXXXX-XXXXX` at the foot of every license panel, in 16 languages: first 10 hex chars (uppercase) of SHA-256 over the UTF-8 bytes of `SystemInfo.deviceUniqueIdentifier` — the exact string sent as `p_device_id`. |
+| Branding / telemetry | Only through the `get_license_branding` / `report_telemetry` RPCs. Since v1.12.0-pre.17 there is no fallback to the tables: the app never reads or writes a table (contract §2). When the branding call fails, the branding cached on the device from the last good answer is used (name and logo file); with no cache, no branding. |
 | Intro offers | If a billing plan carries an `INTRO_OFFER`, its button shows the store's localized intro price and, smaller, the duration and the regular price ("for the first 3 months, then US$39.99", 11 languages). Only the duration words are ours; no offer, no change. |
 | Store events (`p_events`) | `plans_opened` (once per opening of a panel with plans: demo-expired, license-expired, plans panel), `checkout_opened`, `checkout_completed`, `checkout_cancelled`, `subscription_verified` — name, SKU, term and UTC time only. Persisted in PlayerPrefs until reported; `plans_opened` and `checkout_*` are sent at once, the rest with the next session report. |
 | Server verification | Always on: `verify-store-entitlement` Edge Function (Meta user id + `Users.GetUserProof` nonce), `p_store_user_id` on `get_device_status`, `p_events` on `report_device_session` (events carry name, SKU, term and time — never the Meta user id). While the function is not deployed the call fails and the app stays locked with the "internet needed" notice; use the editor stub to test. |
@@ -115,9 +116,10 @@ bool show = manager != null && manager.StoreOffersEnabled && manager.CurrentStat
 manager.ShowPlans();   // pauses the demo stopwatch; "Back" resumes it, a purchase unlocks
 ```
 
-Label it with `VRLicensing.LicenseStrings.Subscribe()` (12 languages). `ShowPlans()` is a no-op
-in any state other than `Unlicensed` / `Demo` and without a store platform, so the wiring is
-safe in company APKs too. VirtualChainsaw does this with `PauseMenuSubscribeButton`, a small
+Label it with `VRLicensing.LicenseStrings.Subscribe()` (16 languages) and show it only while
+`manager.StoreOffersEnabled` is true. `ShowPlans()` is a no-op in any state other than
+`Unlicensed` / `Demo`, without a store platform and without a subscription SKU (free apps), so
+the wiring is safe in company APKs and free store apps too. VirtualChainsaw does this with `PauseMenuSubscribeButton`, a small
 component on the pause-menu panel that clones one of the existing buttons at runtime.
 
 ### Feedback and demo exit survey (v1.12.0-pre.11)
@@ -132,8 +134,8 @@ manager.ShowFeedback();   // rating 1-5 (optional), category, optional text, tha
 
 The panel pauses the demo stopwatch while open and sends `submit_app_feedback` (contract §9):
 device id, product, rating, category (`bug` / `performance` / `content` / `suggestion`), text
-(max 500), `p_app_version` (`Application.version`, or `LicenseManager.AppVersion` if the host
-sets it) and `p_locale` (the language the license UI shows). Never a user id or e-mail.
+(max 500), `p_app_version` (`LicenseManager.AppVersion` if the host sets it, otherwise
+`"<Application.version> (<versionCode>)"` built by the package) and `p_locale` (the language the license UI shows). Never a user id or e-mail.
 VirtualChainsaw wires it with `PauseMenuFeedbackButton` next to `PauseMenuSubscribeButton`.
 
 The **demo-expired panel** first asks "What stopped you?" (`price`, `for_my_company`,
@@ -160,6 +162,35 @@ for (see `SupportedLanguages`) falls back to the headset's language in the same 
 
 Unknown license statuses (e.g. `revoked`) deserialize without error and are treated as "not valid" with the server's message; an online re-validation that returns any verdict other than a connection error drops the cached license immediately.
 
+### Client branding on decals, banners and UI (v1.12.0-pre.17)
+
+`BrandingDecalApplier`, `BrandingMeshApplier` and `BrandingImageApplier` put the client's logo on a URP
+Decal Projector, a mesh and a UI Image.
+
+- **Texture property**: each applier looks on the material for the property it really has, starting with the
+  one configured and then `_Base_Map`, `Base_Map` (URP 17's decal Shader Graph), `_BaseMap`, `_MainTex`.
+  A decal applier left at `_Base_Map` on a URP 17 material used to apply nothing.
+- **Fit, no crop**: the logo keeps its aspect ratio and is shown whole. Decals use the projector's
+  width / height, meshes the shape of the texture the material had (or `aspectOverride`), UI Images
+  `preserveAspect`. `fitLogo` / `preserveAspect` OFF restores the old stretch.
+- **Transparency**: on decals and alpha materials the rest of the surface stays transparent; on an opaque
+  material (a banner) the logo is composited over `backgroundColor` (white by default), so a transparent PNG
+  no longer shows black.
+- Appliers of the same shape share one fitted texture; a new logo releases the old ones.
+
+### Languages and right-to-left text (v1.12.0-pre.17)
+
+The license UI has every string in 16 languages. Arabic and Urdu are shaped by the package itself
+(`RtlText`: contextual letter forms, lam-alef, Latin and digits kept readable, brackets mirrored) and their
+labels switch to TextMeshPro's right-to-left mode, so no shaping plugin is needed. What the package cannot
+bring is the **font**: the project's TMP default font (or its fallback list) must contain the script,
+including the Arabic Presentation Forms blocks (U+FB50-FDFF, U+FE70-FEFF) for Arabic and Urdu.
+When no font can draw a text the label shows English instead, and a label is moved to a font that can draw
+it (its own, TMP's current default, or the font the UI was built with) rather than left empty - a host that
+swaps the default font per language no longer blanks the license panels. A host that runs its own Arabic
+fixer over every label in the scene does not break them either: text it has already shaped is recognised and
+drawn as it is. Urdu has no `SystemLanguage` value, so it is only selected through `LanguageOverride = "ur"`.
+
 ### Device telemetry and demo counting (v1.12.0-pre.16)
 
 Every `report_device_session` carries, besides the demo delta:
@@ -167,13 +198,13 @@ Every `report_device_session` carries, besides the demo delta:
 | Parameter | Value |
 |---|---|
 | `p_report_id` | A new uuid per report. The server adds nothing for an id it has already seen. |
-| `p_app_version` | `LicenseManager.AppVersion` if the host set it, else `Application.version`. Set it at startup to `"<bundleVersion> (<versionCode>)"`, e.g. `"1.0.0 (31)"`, so the admin shows the build. |
+| `p_app_version` | `LicenseManager.AppVersion` if the host set it. Otherwise, since v1.12.0-pre.17, the package sends `"<Application.version> (<versionCode>)"` itself, e.g. `"1.0.0 (31)"`, reading the versionCode of the installed APK (`LicenseBuildInfo.DefaultAppVersion`; in the Editor there is no code and it is just the version). |
 | `p_upm_version` | `PackageVersion.Value`, generated from `package.json`. |
 | `p_license_state` | `demo`, `demo_expired`, `licensed`, `license_expired` (a key or subscription ran out), `store_subscribed` or `blocked`. |
 | `p_locale` | The language the license UI is showing (`LicenseStrings.CurrentLanguage`). |
 
 ```csharp
-// Host app, before the first scene (e.g. RuntimeInitializeOnLoadMethod):
+// Optional since pre.17 - only when the host wants a different text than the default:
 VRLicensing.LicenseManager.AppVersion = "1.0.0 (31)";
 ```
 

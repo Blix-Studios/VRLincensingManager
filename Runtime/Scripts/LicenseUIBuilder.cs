@@ -611,6 +611,9 @@ namespace VRLicensing
 
         private void BuildUI()
         {
+            // The font these labels are created with: the one to go back to when a later
+            // default (a per-language font swapped in by the host) cannot draw a text.
+            homeFont = DefaultFont();
             BuildCanvas();
             BuildOverlay();
             BuildWelcomePanel();
@@ -1377,10 +1380,79 @@ namespace VRLicensing
 
         // ── small helpers shared by the survey and the feedback panel ──
 
-        /// <summary>Text in the UI language when the font (with its fallbacks, e.g. CJK) can draw it, else English.</summary>
+        /// <summary>
+        /// Text in the UI language when a font can draw it (with its fallbacks, e.g. CJK), else
+        /// English. v1.12.0-pre.17: "a font" is the label's own, then the project's current TMP
+        /// default, then the font the license UI was built with — and the label is moved to the
+        /// one that works. A host that swaps the default font per language (an Arabic font with
+        /// no Latin glyphs) used to leave these labels empty.
+        /// </summary>
         private static string Localized(TMP_Text label, string text, string english)
         {
-            return label != null && CanRender(label, text) ? text : english;
+            if (label == null) return english;
+
+            // The label's own font first, then the project's current default, then the font the
+            // license UI was built with. A null font (label not initialised yet) is trusted.
+            var fonts = new System.Collections.Generic.List<TMP_FontAsset> { label.font };
+            TMP_FontAsset current = DefaultFont();
+            if (current != null && !fonts.Contains(current)) fonts.Add(current);
+            if (homeFont != null && !fonts.Contains(homeFont)) fonts.Add(homeFont);
+
+            LabelFallback.Choose(fonts, text, english, CanRender, out string chosen, out TMP_FontAsset font);
+            if (font != null && font != label.font) label.font = font;
+            return chosen;
+        }
+
+        /// <summary>Font the license UI was built with (TMP's default at that moment).</summary>
+        private static TMP_FontAsset homeFont;
+
+        /// <summary>TMP's current default font; null when the project has no TMP settings asset.</summary>
+        private static TMP_FontAsset DefaultFont()
+        {
+            try
+            {
+                return TMP_Settings.instance != null ? TMP_Settings.defaultFontAsset : null;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        // ── right-to-left labels (Arabic, Urdu) ──
+
+        private readonly System.Collections.Generic.List<TextMeshProUGUI> rtlLabels = new System.Collections.Generic.List<TextMeshProUGUI>();
+        private readonly System.Collections.Generic.List<string> rtlSeenText = new System.Collections.Generic.List<string>();
+
+        /// <summary>
+        /// Every label of the license UI shapes Arabic script when it is drawn
+        /// (<see cref="RtlText"/>), wherever its text is assigned from, and is kept in TMP's
+        /// right-to-left mode while its text is Arabic script (<see cref="SyncRtl"/>).
+        /// </summary>
+        private void TrackRtl(TextMeshProUGUI label)
+        {
+            label.textPreprocessor = RtlText.Preprocessor.Instance;
+            rtlLabels.Add(label);
+            rtlSeenText.Add(null);
+        }
+
+        /// <summary>
+        /// Puts each label in or out of right-to-left mode according to the text it holds now.
+        /// Cheap: a label whose text object has not changed is skipped.
+        /// </summary>
+        internal void SyncRtl()
+        {
+            for (int i = 0; i < rtlLabels.Count; i++)
+            {
+                var label = rtlLabels[i];
+                if (label == null) continue;
+                string text = label.text;
+                if (ReferenceEquals(text, rtlSeenText[i])) continue;
+                rtlSeenText[i] = text;
+
+                bool rtl = RtlText.IsRtl(text);
+                if (label.isRightToLeftText != rtl) label.isRightToLeftText = rtl;
+            }
         }
 
         private static void SetLocalized(TMP_Text label, string text, string english)
@@ -1608,7 +1680,7 @@ namespace VRLicensing
             if (col.benefits != null)
             {
                 string line = LicenseStrings.Benefits(lang);
-                col.benefits.text = CanRender(col.benefits, line) ? line : LicenseStrings.Benefits("en");
+                col.benefits.text = Localized(col.benefits, line, LicenseStrings.Benefits("en"));
             }
 
             foreach (var tb in col.buttons)
@@ -1616,12 +1688,12 @@ namespace VRLicensing
                 if (tb.badge != null)
                 {
                     string badge = LicenseStrings.BestValue(lang);
-                    tb.badge.text = CanRender(tb.badge, badge) ? badge : LicenseStrings.BestValue("en");
+                    tb.badge.text = Localized(tb.badge, badge, LicenseStrings.BestValue("en"));
                 }
                 if (tb.label != null)
                 {
                     string termLabel = LicenseStrings.TermLabel(tb.term, lang);
-                    if (!CanRender(tb.label, termLabel)) termLabel = LicenseStrings.TermLabel(tb.term, "en");
+                    termLabel = Localized(tb.label, termLabel, LicenseStrings.TermLabel(tb.term, "en"));
                     tb.label.text = PlanButtonText(tb, termLabel, lang);
                 }
             }
@@ -1643,8 +1715,8 @@ namespace VRLicensing
             string duration = LicenseStrings.Duration(plan.introTerm, plan.introTermCount, lang);
             if (duration == null) return $"{termLabel}  ·  {tb.price}"; // unknown intro term: show the plan as usual
             string note = LicenseStrings.IntroOfferNote(duration, tb.price, lang);
-            if (!CanRender(tb.label, note))
-                note = LicenseStrings.IntroOfferNote(LicenseStrings.Duration(plan.introTerm, plan.introTermCount, "en"), tb.price, "en");
+            note = Localized(tb.label, note,
+                LicenseStrings.IntroOfferNote(LicenseStrings.Duration(plan.introTerm, plan.introTermCount, "en"), tb.price, "en"));
             return $"{termLabel}  ·  {plan.introFormattedPrice}\n<size=72%>{note}</size>";
         }
 
@@ -1868,17 +1940,25 @@ namespace VRLicensing
             foreach (var label in deviceCodeLabels)
             {
                 if (label == null) continue;
-                label.text = CanRender(label, localized) ? localized : english;
+                label.text = Localized(label, localized, english);
             }
         }
 
         private static bool CanRender(TMP_Text label, string text)
         {
+            return label == null || CanRender(label.font, text);
+        }
+
+        /// <summary>The font (with its fallbacks) has every glyph of the text as it will be drawn.</summary>
+        private static bool CanRender(TMP_FontAsset font, string text)
+        {
             try
             {
-                if (label.font == null) return true;
+                if (font == null || string.IsNullOrEmpty(text)) return true;
+                // Arabic script is drawn with its presentation forms: those are the glyphs needed.
+                string drawn = RtlText.ForRtlLayout(text);
                 // Unity 6 TMP: HasCharacters(string, out uint[] missing, searchFallbacks, tryAddCharacter)
-                return label.font.HasCharacters(text, out uint[] _, true, true);
+                return font.HasCharacters(drawn, out uint[] _, true, true);
             }
             catch (Exception)
             {
@@ -2629,6 +2709,7 @@ namespace VRLicensing
             var phGo = new GameObject("Placeholder");
             phGo.transform.SetParent(textArea.transform, false);
             var ph = phGo.AddComponent<TextMeshProUGUI>();
+            TrackRtl(ph);
             ph.text = placeholderText;
             ph.fontSize = freeText ? 15 : 20;
             ph.color = new Color(0.35f, 0.35f, 0.42f, 0.5f);
@@ -2754,6 +2835,7 @@ namespace VRLicensing
             go.transform.SetParent(parent, false);
 
             var tmp = go.AddComponent<TextMeshProUGUI>();
+            TrackRtl(tmp);
             tmp.text = text;
             tmp.fontSize = fontSize;
             tmp.fontStyle = style;
@@ -3014,6 +3096,7 @@ namespace VRLicensing
 
         private void Update()
         {
+            SyncRtl();
             var cam = ResolveHudCam();
 
             SyncPassthrough(cam);
@@ -3214,6 +3297,7 @@ namespace VRLicensing
         {
             RefreshBoundTexts();
             RefreshDeviceCodes();
+            SyncRtl();
             lastHudSecond = -1;
             if (welcomePanel != null && welcomePanel.activeSelf && welcomeBtnContainer != null && welcomeBtnContainer.activeSelf)
                 RefreshWelcomeInfo();

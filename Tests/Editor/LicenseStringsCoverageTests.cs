@@ -32,7 +32,7 @@ namespace VRLicensing.Tests
                         missing.Add(key + "/" + lang);
                 }
             Assert.IsEmpty(missing, "missing or blank rows: " + string.Join(", ", missing));
-            Assert.AreEqual(12, LicenseStrings.SupportedLanguages.Length);
+            Assert.AreEqual(16, LicenseStrings.SupportedLanguages.Length, "12 + Arabic, Japanese, Korean, Urdu (pre.17)");
         }
 
         [Test]
