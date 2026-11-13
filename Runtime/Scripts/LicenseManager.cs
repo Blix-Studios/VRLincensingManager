@@ -172,8 +172,13 @@ namespace VRLicensing
         /// </summary>
         public StorePlatform EffectiveStorePlatform => effectiveStorePlatform;
 
-        /// <summary>True when subscription plans can be offered (storePlatform resolved to MetaHorizon).</summary>
-        public bool StoreOffersEnabled => effectiveStorePlatform == StorePlatform.MetaHorizon;
+        /// <summary>
+        /// True when subscription plans can be offered: storePlatform resolved to MetaHorizon AND
+        /// <see cref="LicenseConfig.storeSubscriptionSku"/> is not empty (v1.12.0-pre.17: a store
+        /// build without a SKU is a free app). Hosts gate their own "Subscribe" entry points
+        /// (pause menu…) on this; <see cref="ShowPlans"/> is a no-op when it is false.
+        /// </summary>
+        public bool StoreOffersEnabled => StoreOffers.Enabled(effectiveStorePlatform, StoreOffers.Sku(config));
 
         /// <summary>Store provider in use, or null when <see cref="EffectiveStorePlatform"/> is None.</summary>
         public IStorePlatformProvider StoreProvider => storeProvider;
@@ -306,7 +311,10 @@ namespace VRLicensing
                 ? StorePlatformRegistry.Create(effectiveStorePlatform)
                 : null;
 
-            if (storeProvider != null)
+            if (storeProvider != null && !StoreOffersEnabled)
+                Debug.Log($"[VR Licensing] Store platform: {effectiveStorePlatform} (no subscription SKU: " +
+                          "free app, no plans or subscribe entry points)");
+            else if (storeProvider != null)
                 Debug.Log($"[VR Licensing] Store platform: {effectiveStorePlatform} " +
                           $"(subscription SKU {config.storeSubscriptionSku}; terms " +
                           $"{string.Join(", ", StoreSubscription.OrderedTerms(config.storeTerms))}" +
@@ -607,11 +615,18 @@ namespace VRLicensing
                 SecureLicenseStorage.ClearStoreEntitlement();
             }
 
+            // pre.17: no SKU = nothing to look up (free app). A stale cache is simply dropped.
+            if (!StoreOffersEnabled)
+            {
+                onDone(false);
+                yield break;
+            }
+
             // Does the signed-in store account hold the subscription (bought in-app or from the
             // store page)? Only a store call; cheap and allowed on every launch.
             StorePurchaseInfo storeSays = null;
             string storeError = null;
-            yield return storeProvider.GetActiveSubscription(config.storeSubscriptionSku,
+            yield return storeProvider.GetActiveSubscription(StoreOffers.Sku(config),
                 (purchase, err) => { storeSays = purchase; storeError = err; });
             if (storeError != null)
                 Debug.LogWarning($"[VR Licensing] Could not read the account's purchases at boot: {storeError}");
@@ -712,7 +727,7 @@ namespace VRLicensing
         public void SubscribeViaStore(string term, Action<bool, string> onResult)
         {
             LastCheckoutCancelled = false;
-            if (storeProvider == null || !storeProvider.IsInitialized)
+            if (storeProvider == null || !storeProvider.IsInitialized || !StoreOffersEnabled)
             {
                 onResult?.Invoke(false, LicenseStrings.Get(LicenseStrings.Key.StoreUnavailable));
                 return;
@@ -942,66 +957,94 @@ namespace VRLicensing
         }
 
         /// <summary>
-        /// Fetches branding set by the client on the web portal and caches it.
-        /// v1.12: through the get_license_branding RPC; falls back to the direct table read
-        /// while the function is not deployed. Other scripts can read
-        /// LicenseManager.ActiveBranding at any time.
+        /// Fetches the branding set by the client on the web portal. Only through the
+        /// <c>get_license_branding</c> RPC (contract §2: the app never reads a table). When the
+        /// call fails for any reason — no network, server error, function missing — the branding
+        /// cached on the device from the last good answer is kept; with no cache there is none.
+        /// Other scripts can read LicenseManager.ActiveBranding at any time.
         /// </summary>
         private IEnumerator FetchAndCacheBranding(LicenseData license)
         {
-            bool functionMissing = false;
-            bool handled = false;
+            BrandingAnswer answer = BrandingAnswer.Failed;
+            BrandingData fresh = null;
 
             yield return supabaseClient.FetchBrandingRpc(
                 license.license_key, config.productId, SystemInfo.deviceUniqueIdentifier,
-                (branding) => { handled = true; ApplyBranding(branding); },
-                (missing, error) =>
-                {
-                    functionMissing = missing;
-                    if (!missing)
-                    {
-                        handled = true;
-                        Debug.LogWarning($"[VR Licensing] Could not fetch branding: {error}");
-                        ApplyBranding(null);
-                    }
-                });
+                (branding) => { fresh = branding; answer = BrandingAnswer.Answered; },
+                (error) => Debug.LogWarning($"[VR Licensing] Could not fetch branding: {error}"));
 
-            if (handled) yield break;
+            BrandingData cached = BrandingCache.Load(config.productId);
+            BrandingData toApply = BrandingCache.Resolve(answer, fresh, cached);
 
-            if (functionMissing)
-                Debug.Log("[VR Licensing] get_license_branding not deployed yet — falling back to the direct read.");
+            if (answer == BrandingAnswer.Answered)
+            {
+                // The server is the truth: store what it said, or forget what we had.
+                if (toApply != null) BrandingCache.Save(config.productId, toApply);
+                else BrandingCache.Clear(config.productId);
+            }
+            else if (toApply != null)
+            {
+                Debug.Log("[VR Licensing] Branding server not reachable — keeping the cached branding.");
+            }
 
-            yield return supabaseClient.FetchBranding(
-                license.id,
-                ApplyBranding,
-                (error) =>
-                {
-                    Debug.LogWarning($"[VR Licensing] Could not fetch branding: {error}");
-                    ApplyBranding(null);
-                }
-            );
+            ApplyBranding(toApply, fromCache: answer != BrandingAnswer.Answered);
         }
 
-        private void ApplyBranding(BrandingData branding)
+        private void ApplyBranding(BrandingData branding, bool fromCache = false)
         {
             cachedBranding = branding;
             OnBrandingLoaded?.Invoke(branding);
 
             if (branding != null && branding.HasBranding)
             {
-                Debug.Log($"[VR Licensing] Client branding: \"{branding.brand_name}\"");
+                Debug.Log($"[VR Licensing] Client branding: \"{branding.brand_name}\"{(fromCache ? " (cached)" : "")}");
 
-                // Download logo image if URL is provided
-                if (!string.IsNullOrEmpty(branding.logo_url))
-                    StartCoroutine(DownloadBrandingLogo(branding.logo_url));
-                else
+                if (string.IsNullOrEmpty(branding.logo_url))
                     OnBrandingLogoReady?.Invoke(null, null);
+                else if (fromCache)
+                    UseLogoBytes(BrandingCache.LoadLogo(config.productId, branding.logo_url), "cached logo");
+                else
+                    StartCoroutine(DownloadBrandingLogo(branding.logo_url));
             }
             else
             {
                 Debug.Log("[VR Licensing] No client branding configured — using defaults.");
                 OnBrandingLogoReady?.Invoke(null, null);
             }
+        }
+
+        /// <summary>Turns image bytes (PNG/JPG) into the logo texture and sprite; null bytes = no logo.</summary>
+        private void UseLogoBytes(byte[] bytes, string what)
+        {
+            Texture2D texture = null;
+            if (bytes != null && bytes.Length > 0)
+            {
+                texture = new Texture2D(2, 2, TextureFormat.RGBA32, true);
+                if (!texture.LoadImage(bytes, false))
+                {
+                    Destroy(texture);
+                    texture = null;
+                }
+            }
+
+            if (texture == null)
+            {
+                cachedBrandingLogo = null;
+                cachedBrandingSprite = null;
+                OnBrandingLogoReady?.Invoke(null, null);
+                return;
+            }
+
+            texture.name = "BrandingLogo";
+            texture.wrapMode = TextureWrapMode.Clamp;
+            Sprite sprite = Sprite.Create(texture, new Rect(0, 0, texture.width, texture.height),
+                new Vector2(0.5f, 0.5f), 100f);
+            sprite.name = "BrandingLogoSprite";
+
+            cachedBrandingLogo = texture;
+            cachedBrandingSprite = sprite;
+            Debug.Log($"[VR Licensing] Branding logo ready ({what}): {texture.width}x{texture.height}px");
+            OnBrandingLogoReady?.Invoke(texture, sprite);
         }
 
         /// <summary>
@@ -1012,47 +1055,33 @@ namespace VRLicensing
         {
             Debug.Log($"[VR Licensing] Downloading branding logo from: {logoUrl}");
 
-            using (var request = UnityWebRequestTexture.GetTexture(logoUrl))
+            // The file itself (not a decoded texture): the same bytes are kept on the device so
+            // the logo is there on a launch without network (pre.17).
+            using (var request = UnityWebRequest.Get(logoUrl))
             {
                 request.timeout = 15;
 
                 yield return request.SendWebRequest();
 
-                if (request.result != UnityWebRequest.Result.Success)
+                byte[] bytes = request.result == UnityWebRequest.Result.Success ? request.downloadHandler.data : null;
+                if (bytes == null || bytes.Length == 0)
                 {
                     Debug.LogWarning($"[VR Licensing] Failed to download branding logo: {request.error}");
-                    cachedBrandingLogo = null;
-                    cachedBrandingSprite = null;
-                    OnBrandingLogoReady?.Invoke(null, null);
+                    // Same rule as the branding itself: keep the copy we have, if any.
+                    UseLogoBytes(BrandingCache.LoadLogo(config.productId, logoUrl), "cached logo");
                     yield break;
                 }
 
-                Texture2D texture = DownloadHandlerTexture.GetContent(request);
-                texture.name = "BrandingLogo";
-
-                // Create a Sprite from the Texture2D
-                Sprite sprite = Sprite.Create(
-                    texture,
-                    new Rect(0, 0, texture.width, texture.height),
-                    new Vector2(0.5f, 0.5f),
-                    100f
-                );
-                sprite.name = "BrandingLogoSprite";
-
-                cachedBrandingLogo = texture;
-                cachedBrandingSprite = sprite;
-
-                Debug.Log($"[VR Licensing] Branding logo downloaded: {texture.width}x{texture.height}px");
-
-                OnBrandingLogoReady?.Invoke(texture, sprite);
+                BrandingCache.SaveLogo(config.productId, logoUrl, bytes);
+                UseLogoBytes(bytes, "downloaded");
             }
         }
 
         /// <summary>
-        /// Collects device data and sends it to the telemetry table.
-        /// v1.12: through the report_telemetry RPC, with a fallback to the direct insert while
-        /// the function is not deployed. Store-subscribed sessions (no key) do not call this;
-        /// they are covered by report_device_session.
+        /// Collects device data and sends it through the <c>report_telemetry</c> RPC. Only the
+        /// RPC (contract §2): the pre-1.12 direct insert into device_telemetry was removed in
+        /// v1.12.0-pre.17. Store-subscribed sessions (no key) do not call this; they are covered
+        /// by report_device_session.
         /// </summary>
         private IEnumerator SendSessionTelemetry(LicenseData license)
         {
@@ -1067,13 +1096,8 @@ namespace VRLicensing
                 avgFps: avgFps
             );
 
-            bool fallback = false;
             yield return supabaseClient.SendTelemetryRpc(
-                license.license_key, config.productId, SystemInfo.deviceUniqueIdentifier, payload,
-                () => fallback = true);
-
-            if (fallback)
-                yield return supabaseClient.SendTelemetry(payload);
+                license.license_key, config.productId, SystemInfo.deviceUniqueIdentifier, payload);
         }
 
         /// <summary>
@@ -1172,7 +1196,7 @@ namespace VRLicensing
         {
             if (!StoreOffersEnabled || uiBuilder == null)
             {
-                Debug.Log("[VR Licensing] ShowPlans ignored — no store platform or UI.");
+                Debug.Log("[VR Licensing] ShowPlans ignored — no store platform, no subscription SKU or no UI.");
                 return;
             }
             if (CurrentState != LicenseState.Unlicensed && CurrentState != LicenseState.Demo)
@@ -1241,11 +1265,15 @@ namespace VRLicensing
         private bool feedbackOpen;
 
         /// <summary>
-        /// Version string sent as <c>p_app_version</c> (max 40, e.g. "1.0.0 (27)"). Defaults to
-        /// <c>Application.version</c>; a host may set it to include its build number.
+        /// Version string sent as <c>p_app_version</c> (max 40, e.g. "1.0.0 (27)"). A host may
+        /// set it; when it does not, the package sends
+        /// "&lt;Application.version&gt; (&lt;versionCode of the installed APK&gt;)" by itself
+        /// (v1.12.0-pre.17, <see cref="LicenseBuildInfo.DefaultAppVersion"/>).
         /// </summary>
         public static string AppVersion { get; set; }
-        private static string EffectiveAppVersion => string.IsNullOrEmpty(AppVersion) ? Application.version : AppVersion;
+
+        /// <summary>The version actually reported: the host's value, or the package default.</summary>
+        public static string EffectiveAppVersion => LicenseBuildInfo.Effective(AppVersion);
 
         private string ExitSurveyKey => EXIT_SURVEY_KEY_PREFIX + config.productId;
 
@@ -1439,6 +1467,7 @@ namespace VRLicensing
             SecureLicenseStorage.MarkInitialized();
             cachedLicense = null;
             cachedBranding = null;
+            BrandingCache.Clear(config.productId); // the branding belonged to that license
             isLicenseExpiry = true;
             isStoreExpiry = false;
             licenseInvalidReason = code;

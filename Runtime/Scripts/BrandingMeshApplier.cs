@@ -8,13 +8,30 @@ namespace VRLicensing
     /// When the branding logo is downloaded at runtime, this component
     /// sets the material's Base Map (_BaseMap for URP/HDRP or _MainTex
     /// for Built-in) to the branding texture.
+    ///
+    /// v1.12.0-pre.17: the logo is fitted to the surface (whole logo, aspect ratio kept). On an
+    /// opaque material the rest of the surface takes <c>backgroundColor</c> — a transparent PNG no
+    /// longer shows black — and on an alpha material it stays transparent. The texture property is
+    /// looked up on the material when the configured one does not exist.
     /// </summary>
     [RequireComponent(typeof(MeshRenderer))]
     [AddComponentMenu("VR Licensing/Branding Mesh Applier")]
     public class BrandingMeshApplier : MonoBehaviour
     {
+        public enum Background
+        {
+            /// <summary>Transparent on alpha-tested / transparent materials, <c>backgroundColor</c> on opaque ones.</summary>
+            Auto,
+            /// <summary>Keep the logo's transparency (the material must draw alpha).</summary>
+            Transparent,
+            /// <summary>Opaque result: the logo over <c>backgroundColor</c>.</summary>
+            Color,
+        }
+
         [Header("Settings")]
-        [Tooltip("The material property name to set. Use '_BaseMap' for URP/HDRP or '_MainTex' for Built-in RP.")]
+        [Tooltip("Preferred material property. Use '_BaseMap' for URP/HDRP or '_MainTex' for Built-in RP. When the " +
+                 "material does not have it, the applier uses the one it does have ('_Base_Map', 'Base_Map', " +
+                 "'_BaseMap', '_MainTex').")]
         [SerializeField] private string texturePropertyName = "_BaseMap";
 
         [Tooltip("Material index to modify (0 = first material).")]
@@ -27,8 +44,28 @@ namespace VRLicensing
         [Tooltip("If true, preserves the original texture when no branding logo is configured.")]
         [SerializeField] private bool keepOriginalIfNoBranding = true;
 
+        [Header("Logo fit (v1.12.0-pre.17)")]
+        [Tooltip("ON: the whole logo is shown with its own aspect ratio, centred on the surface. " +
+                 "OFF: the logo is stretched over the surface (behaviour before pre.17).")]
+        [SerializeField] private bool fitLogo = true;
+
+        [Tooltip("Margin around the logo, as a fraction of the surface (0 = the logo touches the edge).")]
+        [Range(0f, 0.45f)]
+        [SerializeField] private float padding = 0.05f;
+
+        [Tooltip("Width / height of the surface the texture covers. 0 = the shape of the texture the material " +
+                 "had before (banners are normally textured with an image of their own shape).")]
+        [SerializeField] private float aspectOverride = 0f;
+
+        [Tooltip("What fills the surface around the logo and behind its transparent parts.")]
+        [SerializeField] private Background background = Background.Auto;
+
+        [Tooltip("Background colour on opaque materials (and with Background = Color).")]
+        [SerializeField] private Color backgroundColor = Color.white;
+
         private MeshRenderer targetRenderer;
         private Texture originalTexture;
+        private string resolvedProperty;
         private LicenseManager licenseManager;
         private MaterialPropertyBlock propertyBlock;
 
@@ -37,19 +74,24 @@ namespace VRLicensing
             targetRenderer = GetComponent<MeshRenderer>();
 
             // Cache the original texture
-            if (targetRenderer.sharedMaterials.Length > materialIndex)
+            Material mat = SharedMaterial();
+            resolvedProperty = BrandingTexture.ResolveProperty(mat, texturePropertyName);
+            if (mat != null && resolvedProperty != null)
             {
-                var mat = targetRenderer.sharedMaterials[materialIndex];
-                if (mat != null && mat.HasProperty(texturePropertyName))
-                {
-                    originalTexture = mat.GetTexture(texturePropertyName);
-                }
+                originalTexture = mat.GetTexture(resolvedProperty);
             }
 
             if (useMaterialPropertyBlock)
             {
                 propertyBlock = new MaterialPropertyBlock();
             }
+        }
+
+        private Material SharedMaterial()
+        {
+            if (targetRenderer == null) return null;
+            var materials = targetRenderer.sharedMaterials;
+            return materialIndex >= 0 && materialIndex < materials.Length ? materials[materialIndex] : null;
         }
 
         private void Start()
@@ -63,15 +105,12 @@ namespace VRLicensing
                 return;
             }
 
+            // Always listen: a later branding answer (or its removal) must reach this surface too.
+            licenseManager.OnBrandingLogoReady += HandleBrandingLogoReady;
+
             // If the logo is already available (late subscriber), apply immediately
             if (licenseManager.BrandingLogoTexture != null)
-            {
-                ApplyTexture(licenseManager.BrandingLogoTexture);
-                return;
-            }
-
-            // Otherwise subscribe to the event
-            licenseManager.OnBrandingLogoReady += HandleBrandingLogoReady;
+                ApplyLogo(licenseManager.BrandingLogoTexture);
         }
 
         private void OnDestroy()
@@ -86,7 +125,7 @@ namespace VRLicensing
         {
             if (texture != null)
             {
-                ApplyTexture(texture);
+                ApplyLogo(texture);
             }
             else if (!keepOriginalIfNoBranding)
             {
@@ -94,9 +133,37 @@ namespace VRLicensing
             }
         }
 
+        private void ApplyLogo(Texture2D logo)
+        {
+            if (!fitLogo)
+            {
+                ApplyTexture(logo);
+                return;
+            }
+
+            Material mat = SharedMaterial();
+            bool keepAlpha = background == Background.Transparent ||
+                             (background == Background.Auto && BrandingTexture.DrawsAlpha(mat));
+            float aspect = aspectOverride > 0f
+                ? aspectOverride
+                : (originalTexture != null && originalTexture.height > 0
+                    ? (float)originalTexture.width / originalTexture.height
+                    : 0f); // 0 = the logo's own aspect
+
+            ApplyTexture(BrandingTexture.Fitted(logo, aspect, padding, backgroundColor, keepAlpha));
+        }
+
         private void ApplyTexture(Texture texture)
         {
             if (targetRenderer == null) return;
+
+            resolvedProperty = BrandingTexture.ResolveProperty(SharedMaterial(), texturePropertyName);
+            if (resolvedProperty == null)
+            {
+                Debug.LogWarning($"[BrandingMeshApplier] Material {materialIndex} on '{gameObject.name}' has none of " +
+                    $"the texture properties '{texturePropertyName}', {string.Join(", ", BrandingTexture.KnownProperties)}.");
+                return;
+            }
 
             if (useMaterialPropertyBlock)
             {
@@ -105,7 +172,7 @@ namespace VRLicensing
 
                 if (texture != null)
                 {
-                    propertyBlock.SetTexture(texturePropertyName, texture);
+                    propertyBlock.SetTexture(resolvedProperty, texture);
                 }
                 else
                 {
@@ -120,22 +187,14 @@ namespace VRLicensing
                 if (materialIndex < targetRenderer.materials.Length)
                 {
                     Material mat = targetRenderer.materials[materialIndex];
-                    if (mat.HasProperty(texturePropertyName))
-                    {
-                        mat.SetTexture(texturePropertyName, texture);
-                    }
-                    else
-                    {
-                        Debug.LogWarning($"[BrandingMeshApplier] Material on '{gameObject.name}' " +
-                            $"does not have property '{texturePropertyName}'.");
-                    }
+                    mat.SetTexture(resolvedProperty, texture);
                 }
             }
 
             if (texture != null)
             {
                 Debug.Log($"[BrandingMeshApplier] Branding texture applied to '{gameObject.name}' " +
-                    $"(property: {texturePropertyName}, index: {materialIndex})");
+                    $"(property: {resolvedProperty}, index: {materialIndex}, {texture.width}x{texture.height})");
             }
         }
 
@@ -144,7 +203,7 @@ namespace VRLicensing
         /// </summary>
         public void RestoreOriginal()
         {
-            ApplyTexture(originalTexture);
+            ApplyTexture(useMaterialPropertyBlock ? null : originalTexture);
         }
     }
 }

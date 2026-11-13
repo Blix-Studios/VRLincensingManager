@@ -11,9 +11,11 @@ namespace VRLicensing
     /// License validation, device binding and demo accounting go through
     /// SECURITY DEFINER RPCs (see migration 20260706120000_add_vr_licensing_rpcs.sql)
     /// so the anon key can no longer read/enumerate the tables directly.
-    /// v1.12 adds get_license_branding / report_telemetry (with a fallback to the
-    /// pre-1.12 direct table access while the functions are not deployed), the
-    /// verify-store-entitlement Edge Function, p_store_user_id and p_events.
+    /// v1.12 adds get_license_branding / report_telemetry, the verify-store-entitlement Edge
+    /// Function, p_store_user_id and p_events.
+    /// v1.12.0-pre.17: every database call is an RPC. The pre-1.12 fallbacks that read
+    /// license_branding and inserted into device_telemetry with the anon key are gone
+    /// (contract §2: the app never touches a table; NoDirectTableAccessTests guards it).
     /// </summary>
     public class SupabaseClient : MonoBehaviour
     {
@@ -50,13 +52,6 @@ namespace VRLicensing
             request.timeout = timeoutSeconds;
             return request;
         }
-
-        /// <summary>
-        /// PostgREST answers 404 (PGRST202) when an RPC does not exist or its signature does not
-        /// match. That is how the client tells "function not deployed yet" from a real failure
-        /// and falls back to the pre-1.12 path.
-        /// </summary>
-        private static bool IsFunctionMissing(UnityWebRequest request) => request.responseCode == 404;
 
         /// <summary>Sends one RPC and hands back the raw answer (v1.12.0-pre.16).</summary>
         public delegate IEnumerator RpcTransport(string function, string jsonBody, Action<RpcResponse> onDone);
@@ -96,7 +91,11 @@ namespace VRLicensing
 
         private static string Snippet(UnityWebRequest request)
         {
-            string text = request.downloadHandler != null ? request.downloadHandler.text : null;
+            return Snippet(request.downloadHandler != null ? request.downloadHandler.text : null);
+        }
+
+        private static string Snippet(string text)
+        {
             if (string.IsNullOrEmpty(text)) return "";
             return text.Length > 160 ? text.Substring(0, 160) + "…" : text;
         }
@@ -361,19 +360,18 @@ namespace VRLicensing
         }
 
         // ────────────────────────────────────────────────────────────────────
-        // 4. Branding — v1.12: get_license_branding RPC (SECURITY DEFINER; the
-        //    server checks the key is valid for the product and bound to this
-        //    device). Falls back to the direct license_branding read while the
-        //    function is not deployed (onError reports notFound = true).
+        // 4. Branding — get_license_branding RPC (SECURITY DEFINER; the server
+        //    checks the key is valid for the product and bound to this device).
+        //    RPC only: there is no other way to read branding (pre.17).
         // ────────────────────────────────────────────────────────────────────
 
         /// <summary>
         /// Fetches branding through the get_license_branding RPC.
         /// </summary>
-        /// <param name="onSuccess">BrandingData, or null when the client configured none.</param>
-        /// <param name="onError">(functionMissing, message). functionMissing = the RPC is not deployed.</param>
+        /// <param name="onSuccess">The server answered: BrandingData, or null when the client configured none.</param>
+        /// <param name="onError">No usable answer (no network, HTTP error, function missing, unreadable body).</param>
         public IEnumerator FetchBrandingRpc(string licenseKey, int productId, string deviceId,
-            Action<BrandingData> onSuccess, Action<bool, string> onError)
+            Action<BrandingData> onSuccess, Action<string> onError)
         {
             var body = JsonUtility.ToJson(new ReqBranding
             {
@@ -382,106 +380,37 @@ namespace VRLicensing
                 p_device_id = deviceId
             });
 
-            using (var request = BuildRpc("get_license_branding", body))
+            RpcResponse response = null;
+            yield return SendRpc("get_license_branding", body, r => response = r);
+
+            if (response == null || !response.IsSuccess)
             {
-                yield return request.SendWebRequest();
-
-                if (request.result != UnityWebRequest.Result.Success)
-                {
-                    onError?.Invoke(IsFunctionMissing(request),
-                        $"get_license_branding failed: {request.error} (HTTP {request.responseCode}) {Snippet(request)}");
-                    yield break;
-                }
-
-                try
-                {
-                    string text = request.downloadHandler.text?.Trim();
-                    if (string.IsNullOrEmpty(text) || text == "null" || text == "{}")
-                    {
-                        onSuccess?.Invoke(null);
-                        yield break;
-                    }
-
-                    var result = JsonUtility.FromJson<RpcBrandingResult>(text);
-                    if (result == null || (string.IsNullOrEmpty(result.brandName) && string.IsNullOrEmpty(result.logoUrl)))
-                    {
-                        if (result != null && !string.IsNullOrEmpty(result.error))
-                            Debug.LogWarning($"[VR Licensing] get_license_branding: {result.error}");
-                        onSuccess?.Invoke(null);
-                        yield break;
-                    }
-
-                    onSuccess?.Invoke(new BrandingData
-                    {
-                        brand_name = result.brandName,
-                        logo_url = result.logoUrl
-                    });
-                }
-                catch (Exception e)
-                {
-                    onError?.Invoke(false, $"Error parsing branding response: {e.Message}");
-                }
+                onError?.Invoke(response == null
+                    ? "get_license_branding: no answer"
+                    : $"get_license_branding failed: {response.error} (HTTP {response.httpCode}) {Snippet(response.body)}");
+                yield break;
             }
-        }
 
-        /// <summary>
-        /// Pre-1.12 branding read (direct select on license_branding by license id). Kept as the
-        /// fallback until get_license_branding is deployed and the anon policy is removed.
-        /// </summary>
-        public IEnumerator FetchBranding(string licenseId,
-            Action<BrandingData> onSuccess, Action<string> onError)
-        {
-            string endpoint = $"{supabaseUrl}/rest/v1/license_branding";
-            string query = $"?license_id=eq.{Uri.EscapeDataString(licenseId)}" +
-                           $"&select=id,license_id,brand_name,logo_url";
-
-            using (var request = UnityWebRequest.Get(endpoint + query))
+            BrandingData branding;
+            string parseError;
+            if (!BrandingCache.TryParseAnswer(response.body, out branding, out parseError))
             {
-                request.SetRequestHeader("apikey", anonKey);
-                request.SetRequestHeader("Authorization", $"Bearer {anonKey}");
-                request.SetRequestHeader("Accept", "application/json");
-                request.timeout = 10;
-
-                yield return request.SendWebRequest();
-
-                if (request.result != UnityWebRequest.Result.Success)
-                {
-                    onError?.Invoke($"Error fetching branding: {request.error}");
-                    yield break;
-                }
-
-                try
-                {
-                    var brandingArray = BrandingDataArray.FromJson(request.downloadHandler.text);
-
-                    if (brandingArray.items == null || brandingArray.items.Length == 0)
-                    {
-                        onSuccess?.Invoke(null);
-                        yield break;
-                    }
-
-                    onSuccess?.Invoke(brandingArray.items[0]);
-                }
-                catch (Exception e)
-                {
-                    onError?.Invoke($"Error parsing branding response: {e.Message}");
-                }
+                onError?.Invoke("get_license_branding: " + parseError);
+                yield break;
             }
+            onSuccess?.Invoke(branding);
         }
 
         // ────────────────────────────────────────────────────────────────────
-        // 5. Telemetry — v1.12: report_telemetry RPC (SECURITY DEFINER; server
-        //    checks the key is bound to this device, caps size and rate). Falls
-        //    back to the direct insert while the function is not deployed.
+        // 5. Telemetry — report_telemetry RPC (SECURITY DEFINER; server checks
+        //    the key is bound to this device, caps size and rate). RPC only.
         // ────────────────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Sends telemetry through the report_telemetry RPC. Fire-and-forget; errors are
-        /// logged only, except that a missing function triggers <paramref name="onFunctionMissing"/>
-        /// so the caller can fall back to <see cref="SendTelemetry"/>.
+        /// Sends telemetry through the report_telemetry RPC. Fire-and-forget: errors are logged only.
         /// </summary>
         public IEnumerator SendTelemetryRpc(string licenseKey, int productId, string deviceId,
-            TelemetryPayload payload, Action onFunctionMissing)
+            TelemetryPayload payload)
         {
             string head = JsonUtility.ToJson(new ReqTelemetryHead
             {
@@ -491,47 +420,12 @@ namespace VRLicensing
             });
             string body = head.Substring(0, head.Length - 1) + ",\"p_payload\":" + payload.ToJson() + "}";
 
-            using (var request = BuildRpc("report_telemetry", body))
-            {
-                yield return request.SendWebRequest();
+            RpcResponse response = null;
+            yield return SendRpc("report_telemetry", body, r => response = r);
 
-                if (request.result == UnityWebRequest.Result.Success) yield break;
-
-                if (IsFunctionMissing(request))
-                {
-                    Debug.Log("[VR Licensing] report_telemetry not deployed yet — falling back to the direct insert.");
-                    onFunctionMissing?.Invoke();
-                }
-                else
-                {
-                    Debug.LogWarning($"[VR Licensing] report_telemetry failed (non-critical): {request.error} " +
-                                     $"(HTTP {request.responseCode}) {Snippet(request)}");
-                }
-            }
-        }
-
-        /// <summary>
-        /// Pre-1.12 telemetry path (anon INSERT into device_telemetry). Kept as the fallback.
-        /// </summary>
-        public IEnumerator SendTelemetry(TelemetryPayload payload)
-        {
-            string url = $"{supabaseUrl}/rest/v1/device_telemetry";
-
-            using (var request = new UnityWebRequest(url, "POST"))
-            {
-                request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(payload.ToJson()));
-                request.downloadHandler = new DownloadHandlerBuffer();
-                request.SetRequestHeader("apikey", anonKey);
-                request.SetRequestHeader("Authorization", $"Bearer {anonKey}");
-                request.SetRequestHeader("Content-Type", "application/json");
-                request.SetRequestHeader("Prefer", "return=minimal");
-                request.timeout = 10;
-
-                yield return request.SendWebRequest();
-
-                if (request.result != UnityWebRequest.Result.Success)
-                    Debug.LogWarning($"[VR Licensing] Telemetry send failed (non-critical): {request.error}");
-            }
+            if (response == null || !response.IsSuccess)
+                Debug.LogWarning("[VR Licensing] report_telemetry failed (non-critical): " +
+                                 (response == null ? "no answer" : $"{response.error} (HTTP {response.httpCode}) {Snippet(response.body)}"));
         }
 
         // ────────────────────────────────────────────────────────────────────

@@ -10,6 +10,11 @@ namespace VRLicensing
     /// When the branding logo is downloaded at runtime, this component
     /// sets the material's Base Map texture to the branding logo.
     ///
+    /// v1.12.0-pre.17: the texture property is found on the material itself (<c>_Base_Map</c>,
+    /// <c>Base_Map</c> — URP 17's decal Shader Graph —, <c>_BaseMap</c>, <c>_MainTex</c>), and
+    /// the logo is fitted to the projector's width x height: whole logo, aspect ratio kept, the
+    /// rest of the decal transparent.
+    ///
     /// Uses Reflection to access DecalProjector, so this script does NOT
     /// create a hard dependency on the Universal Render Pipeline package.
     /// </summary>
@@ -17,17 +22,32 @@ namespace VRLicensing
     public class BrandingDecalApplier : MonoBehaviour
     {
         [Header("Settings")]
-        [Tooltip("The material property name for the base map texture. " +
-                 "For URP Shader Graphs/Decal this is typically '_Base_Map' or '_BaseMap'.")]
+        [Tooltip("Preferred material property for the base map texture. When the material does not have it, " +
+                 "the applier uses the one it does have: '_Base_Map', 'Base_Map' (URP 17 decal shader), " +
+                 "'_BaseMap' or '_MainTex'.")]
         [SerializeField] private string texturePropertyName = "_Base_Map";
 
         [Tooltip("If true, preserves the original texture when no branding logo is configured.")]
         [SerializeField] private bool keepOriginalIfNoBranding = true;
 
+        [Header("Logo fit (v1.12.0-pre.17)")]
+        [Tooltip("ON: the whole logo is shown with its own aspect ratio, centred in the decal; the rest of the " +
+                 "decal stays transparent. OFF: the logo is stretched over the decal (behaviour before pre.17).")]
+        [SerializeField] private bool fitLogo = true;
+
+        [Tooltip("Margin around the logo, as a fraction of the decal (0 = the logo touches the edge).")]
+        [Range(0f, 0.45f)]
+        [SerializeField] private float padding = 0f;
+
+        [Tooltip("Width / height of the decal. 0 = taken from the Decal Projector's size.")]
+        [SerializeField] private float aspectOverride = 0f;
+
         private Component decalProjector;
         private PropertyInfo materialProperty;
+        private PropertyInfo sizeProperty;
         private Material decalMaterial;
         private Texture originalTexture;
+        private string resolvedProperty;
         private LicenseManager licenseManager;
 
         private void Awake()
@@ -50,8 +70,10 @@ namespace VRLicensing
                 return;
             }
 
-            // Cache the 'material' property via reflection
+            // Cache the 'material' and 'size' properties via reflection
             materialProperty = decalType.GetProperty("material",
+                BindingFlags.Public | BindingFlags.Instance);
+            sizeProperty = decalType.GetProperty("size",
                 BindingFlags.Public | BindingFlags.Instance);
 
             if (materialProperty == null)
@@ -62,10 +84,11 @@ namespace VRLicensing
 
             // Get the current material and cache the original texture
             decalMaterial = materialProperty.GetValue(decalProjector) as Material;
+            resolvedProperty = BrandingTexture.ResolveProperty(decalMaterial, texturePropertyName);
 
-            if (decalMaterial != null && decalMaterial.HasProperty(texturePropertyName))
+            if (decalMaterial != null && resolvedProperty != null)
             {
-                originalTexture = decalMaterial.GetTexture(texturePropertyName);
+                originalTexture = decalMaterial.GetTexture(resolvedProperty);
             }
         }
 
@@ -82,15 +105,12 @@ namespace VRLicensing
                 return;
             }
 
+            // Always listen: a later branding answer (or its removal) must reach this decal too.
+            licenseManager.OnBrandingLogoReady += HandleBrandingLogoReady;
+
             // If the logo is already available (late subscriber), apply immediately
             if (licenseManager.BrandingLogoTexture != null)
-            {
-                ApplyTexture(licenseManager.BrandingLogoTexture);
-                return;
-            }
-
-            // Otherwise subscribe to the event
-            licenseManager.OnBrandingLogoReady += HandleBrandingLogoReady;
+                ApplyLogo(licenseManager.BrandingLogoTexture);
         }
 
         private void OnDestroy()
@@ -105,12 +125,42 @@ namespace VRLicensing
         {
             if (texture != null)
             {
-                ApplyTexture(texture);
+                ApplyLogo(texture);
             }
             else if (!keepOriginalIfNoBranding)
             {
                 ApplyTexture(null);
             }
+        }
+
+        private void ApplyLogo(Texture2D logo)
+        {
+            // A decal blends with what is under it: the logo keeps its transparency.
+            Texture texture = fitLogo
+                ? BrandingTexture.Fitted(logo, DecalAspect(logo), padding, Color.white, keepAlpha: true)
+                : logo;
+            ApplyTexture(texture);
+        }
+
+        /// <summary>Width / height of the projected rectangle.</summary>
+        private float DecalAspect(Texture2D logo)
+        {
+            if (aspectOverride > 0f) return aspectOverride;
+            if (sizeProperty != null && decalProjector != null)
+            {
+                try
+                {
+                    var size = (Vector3)sizeProperty.GetValue(decalProjector);
+                    if (size.x > 0f && size.y > 0f) return size.x / size.y;
+                }
+                catch (Exception)
+                {
+                    // fall through to the original texture's shape
+                }
+            }
+            if (originalTexture != null && originalTexture.height > 0)
+                return (float)originalTexture.width / originalTexture.height;
+            return 0f; // the logo's own aspect
         }
 
         private void ApplyTexture(Texture texture)
@@ -123,21 +173,22 @@ namespace VRLicensing
 
             if (decalMaterial == null) return;
 
-            if (decalMaterial.HasProperty(texturePropertyName))
+            resolvedProperty = BrandingTexture.ResolveProperty(decalMaterial, texturePropertyName);
+            if (resolvedProperty != null)
             {
-                decalMaterial.SetTexture(texturePropertyName, texture);
+                decalMaterial.SetTexture(resolvedProperty, texture);
 
                 if (texture != null)
                 {
                     Debug.Log($"[BrandingDecalApplier] Branding texture applied to decal on '{gameObject.name}' " +
-                        $"(property: {texturePropertyName})");
+                        $"(property: {resolvedProperty}, {texture.width}x{texture.height})");
                 }
             }
             else
             {
-                Debug.LogWarning($"[BrandingDecalApplier] Material on '{gameObject.name}' " +
-                    $"does not have property '{texturePropertyName}'. " +
-                    $"Try '_BaseMap' or '_Base_Map' depending on your shader.");
+                Debug.LogWarning($"[BrandingDecalApplier] Material '{decalMaterial.name}' on '{gameObject.name}' " +
+                    $"has none of the texture properties '{texturePropertyName}', " +
+                    $"{string.Join(", ", BrandingTexture.KnownProperties)}.");
             }
         }
 

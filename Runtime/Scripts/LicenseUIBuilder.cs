@@ -76,7 +76,8 @@ namespace VRLicensing
         private TextMeshProUGUI licExpMsgText;
 
         // v1.12 — store subscriptions (MetaHorizon builds) and the privacy device code
-        private bool storeOffersEnabled;        // config.storePlatform resolved to a registered provider
+        private bool storeOffersEnabled;        // store platform resolved AND a subscription SKU configured (pre.17)
+        private bool webPurchaseCta;            // URL / QR / price: never in a store build (pre.17)
         private GameObject expDivider;          // demo-expired column divider
         private RectTransform expKeyColumn;     // demo-expired right column ("already have a key")
         private StoreColumn demoStoreColumn;    // demo-expired left column in store builds
@@ -263,11 +264,22 @@ namespace VRLicensing
             builder.manager = licenseManager;
             // The store assemblies register before BeforeSceneLoad, so this is already settled
             // (the manager resolves the same thing, and logs the warning, in Initialize).
-            builder.storeOffersEnabled =
-                StorePlatformRegistry.Effective(licenseConfig.storePlatform) == StorePlatform.MetaHorizon;
+            builder.ApplyStoreSettings(StorePlatformRegistry.Effective(licenseConfig.storePlatform));
             builder.BuildUI();
 
             return builder;
+        }
+
+        /// <summary>
+        /// Decides, before the panels are built, what this build may offer (v1.12.0-pre.17):
+        /// subscription plans only with a store platform AND a subscription SKU - a store build
+        /// without a SKU is a free app: no "Subscribe" button, no plans panel, no plans column on
+        /// the expired panels - and the web purchase CTA only outside a store.
+        /// </summary>
+        internal void ApplyStoreSettings(StorePlatform effectivePlatform)
+        {
+            storeOffersEnabled = StoreOffers.Enabled(effectivePlatform, StoreOffers.Sku(config));
+            webPurchaseCta = StoreOffers.WebPurchaseCta(effectivePlatform, config.showPurchaseCta);
         }
 
         // ─────────────────────── Public API ───────────────────────
@@ -444,7 +456,7 @@ namespace VRLicensing
 
             if (storeOffersEnabled)
                 return what + "\n" + L(label, LicenseStrings.Key.ChoosePlanOrNewKey);
-            return config.showPurchaseCta
+            return webPurchaseCta
                 ? what + "\n" + L(label, LicenseStrings.Key.RenewOnWeb)
                 : what + "\n" + L(label, LicenseStrings.Key.AskOrgForKey);
         }
@@ -990,7 +1002,7 @@ namespace VRLicensing
             // App Policies 1.1). Direct APK: the web purchase CTA, or the neutral hint.
             if (storeOffersEnabled)
                 demoStoreColumn = BuildStoreColumn(bodyRt, -COLUMN_X, "ExpStore");
-            else if (config.showPurchaseCta)
+            else if (webPurchaseCta)
                 BuildPurchaseCta(bodyRt, columnX: -COLUMN_X);
             else
                 BuildOrganisationKeyHint(bodyRt, columnX: -COLUMN_X);

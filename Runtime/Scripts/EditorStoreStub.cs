@@ -99,7 +99,9 @@ namespace VRLicensing
         private static void ClearPrefs()
         {
             SecureLicenseStorage.ClearAll();
-            Debug.Log("[VR Licensing] Cached license / demo / store data cleared.");
+            var config = Resources.Load<LicenseConfig>("LicenseConfig");
+            if (config != null) BrandingCache.Clear(config.productId);
+            Debug.Log("[VR Licensing] Cached license / demo / store / branding data cleared.");
         }
 
         // ── Fake store ──
