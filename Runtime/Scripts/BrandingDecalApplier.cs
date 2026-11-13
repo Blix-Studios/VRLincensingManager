@@ -15,6 +15,11 @@ namespace VRLicensing
     /// the logo is fitted to the projector's width x height: whole logo, aspect ratio kept, the
     /// rest of the decal transparent.
     ///
+    /// v1.12.0-pre.18: the projector's material asset is never modified. The logo goes on a
+    /// runtime copy (<see cref="BrandingMaterials"/>) that this component puts on the projector
+    /// and takes off again — the original material back — when it is destroyed. Only projectors
+    /// that carry this component show the logo; before, every decal sharing the material did.
+    ///
     /// Uses Reflection to access DecalProjector, so this script does NOT
     /// create a hard dependency on the Universal Render Pipeline package.
     /// </summary>
@@ -45,10 +50,14 @@ namespace VRLicensing
         private Component decalProjector;
         private PropertyInfo materialProperty;
         private PropertyInfo sizeProperty;
-        private Material decalMaterial;
+        private Material originalMaterial;   // the project's asset: read, never written
+        private Material brandedMaterial;    // our runtime copy, while the logo is on
         private Texture originalTexture;
         private string resolvedProperty;
         private LicenseManager licenseManager;
+
+        /// <summary>The material asset the projector had before branding (never modified).</summary>
+        public Material OriginalMaterial => originalMaterial;
 
         private void Awake()
         {
@@ -82,13 +91,13 @@ namespace VRLicensing
                 return;
             }
 
-            // Get the current material and cache the original texture
-            decalMaterial = materialProperty.GetValue(decalProjector) as Material;
-            resolvedProperty = BrandingTexture.ResolveProperty(decalMaterial, texturePropertyName);
+            // Remember the projector's material and its texture (read only)
+            originalMaterial = materialProperty.GetValue(decalProjector) as Material;
+            resolvedProperty = BrandingTexture.ResolveProperty(originalMaterial, texturePropertyName);
 
-            if (decalMaterial != null && resolvedProperty != null)
+            if (originalMaterial != null && resolvedProperty != null)
             {
-                originalTexture = decalMaterial.GetTexture(resolvedProperty);
+                originalTexture = originalMaterial.GetTexture(resolvedProperty);
             }
         }
 
@@ -119,6 +128,9 @@ namespace VRLicensing
             {
                 licenseManager.OnBrandingLogoReady -= HandleBrandingLogoReady;
             }
+
+            // Safety net: the projector gets its own material back and the copy is released.
+            RestoreOriginal();
         }
 
         private void HandleBrandingLogoReady(Texture2D texture, Sprite sprite)
@@ -133,8 +145,17 @@ namespace VRLicensing
             }
         }
 
-        private void ApplyLogo(Texture2D logo)
+        /// <summary>
+        /// Shows <paramref name="logo"/> on this decal (what the applier does by itself when the
+        /// license manager has one). The projector's material asset is not touched.
+        /// </summary>
+        public void ApplyLogo(Texture2D logo)
         {
+            if (logo == null)
+            {
+                RestoreOriginal();
+                return;
+            }
             // A decal blends with what is under it: the logo keeps its transparency.
             Texture texture = fitLogo
                 ? BrandingTexture.Fitted(logo, DecalAspect(logo), padding, Color.white, keepAlpha: true)
@@ -165,39 +186,57 @@ namespace VRLicensing
 
         private void ApplyTexture(Texture texture)
         {
-            // Re-fetch the material in case it was changed at runtime
-            if (decalProjector != null && materialProperty != null)
+            if (decalProjector == null || materialProperty == null) return;
+
+            // Somebody gave the projector another material at runtime: that one is the original now.
+            var current = materialProperty.GetValue(decalProjector) as Material;
+            if (current != null && !ReferenceEquals(current, brandedMaterial) && !ReferenceEquals(current, originalMaterial)
+                && !BrandingMaterials.IsCopy(current))
             {
-                decalMaterial = materialProperty.GetValue(decalProjector) as Material;
+                originalMaterial = current;
+                originalTexture = null;
             }
 
-            if (decalMaterial == null) return;
+            if (originalMaterial == null) return;
 
-            resolvedProperty = BrandingTexture.ResolveProperty(decalMaterial, texturePropertyName);
-            if (resolvedProperty != null)
+            resolvedProperty = BrandingTexture.ResolveProperty(originalMaterial, texturePropertyName);
+            if (resolvedProperty == null)
             {
-                decalMaterial.SetTexture(resolvedProperty, texture);
-
-                if (texture != null)
-                {
-                    Debug.Log($"[BrandingDecalApplier] Branding texture applied to decal on '{gameObject.name}' " +
-                        $"(property: {resolvedProperty}, {texture.width}x{texture.height})");
-                }
-            }
-            else
-            {
-                Debug.LogWarning($"[BrandingDecalApplier] Material '{decalMaterial.name}' on '{gameObject.name}' " +
+                Debug.LogWarning($"[BrandingDecalApplier] Material '{originalMaterial.name}' on '{gameObject.name}' " +
                     $"has none of the texture properties '{texturePropertyName}', " +
                     $"{string.Join(", ", BrandingTexture.KnownProperties)}.");
+                return;
+            }
+
+            // A copy of the material carries the texture; the asset itself is only read.
+            Material next = BrandingMaterials.Acquire(originalMaterial, resolvedProperty, texture);
+            materialProperty.SetValue(decalProjector, next);
+            BrandingMaterials.Release(brandedMaterial);
+            brandedMaterial = next;
+
+            if (texture != null)
+            {
+                Debug.Log($"[BrandingDecalApplier] Branding texture applied to decal on '{gameObject.name}' " +
+                    $"(property: {resolvedProperty}, {texture.width}x{texture.height})");
             }
         }
 
         /// <summary>
-        /// Restores the original texture that was on the decal material before branding was applied.
+        /// Takes the branding off: the projector gets back the material it had, untouched, and
+        /// the runtime copy is released.
         /// </summary>
         public void RestoreOriginal()
         {
-            ApplyTexture(originalTexture);
+            if (ReferenceEquals(brandedMaterial, null)) return;
+
+            if (decalProjector != null && materialProperty != null && originalMaterial != null)
+            {
+                var current = materialProperty.GetValue(decalProjector) as Material;
+                if (current == null || ReferenceEquals(current, brandedMaterial))
+                    materialProperty.SetValue(decalProjector, originalMaterial);
+            }
+            BrandingMaterials.Release(brandedMaterial);
+            brandedMaterial = null;
         }
 
         /// <summary>

@@ -13,6 +13,10 @@ namespace VRLicensing
     /// opaque material the rest of the surface takes <c>backgroundColor</c> — a transparent PNG no
     /// longer shows black — and on an alpha material it stays transparent. The texture property is
     /// looked up on the material when the configured one does not exist.
+    ///
+    /// v1.12.0-pre.18: the material asset is never modified. With a MaterialPropertyBlock (the
+    /// default) nothing but the renderer changes; without it the renderer gets a runtime copy of
+    /// the material (<see cref="BrandingMaterials"/>) and its own material back on destroy.
     /// </summary>
     [RequireComponent(typeof(MeshRenderer))]
     [AddComponentMenu("VR Licensing/Branding Mesh Applier")]
@@ -37,8 +41,9 @@ namespace VRLicensing
         [Tooltip("Material index to modify (0 = first material).")]
         [SerializeField] private int materialIndex = 0;
 
-        [Tooltip("If true, uses a MaterialPropertyBlock instead of modifying the shared material. " +
-                 "This avoids creating material instances and is more memory-efficient.")]
+        [Tooltip("If true (recommended), uses a MaterialPropertyBlock: only this renderer changes. If false, the " +
+                 "renderer gets a runtime copy of the material carrying the logo. The material asset itself is " +
+                 "never modified either way.")]
         [SerializeField] private bool useMaterialPropertyBlock = true;
 
         [Tooltip("If true, preserves the original texture when no branding logo is configured.")]
@@ -64,21 +69,26 @@ namespace VRLicensing
         [SerializeField] private Color backgroundColor = Color.white;
 
         private MeshRenderer targetRenderer;
+        private Material originalMaterial;   // the project's asset: read, never written
+        private Material brandedMaterial;    // our runtime copy (only without a property block)
         private Texture originalTexture;
         private string resolvedProperty;
         private LicenseManager licenseManager;
         private MaterialPropertyBlock propertyBlock;
 
+        /// <summary>The material asset the renderer had before branding (never modified).</summary>
+        public Material OriginalMaterial => originalMaterial;
+
         private void Awake()
         {
             targetRenderer = GetComponent<MeshRenderer>();
 
-            // Cache the original texture
-            Material mat = SharedMaterial();
-            resolvedProperty = BrandingTexture.ResolveProperty(mat, texturePropertyName);
-            if (mat != null && resolvedProperty != null)
+            // Remember the renderer's material and its texture (read only)
+            originalMaterial = SharedMaterial();
+            resolvedProperty = BrandingTexture.ResolveProperty(originalMaterial, texturePropertyName);
+            if (originalMaterial != null && resolvedProperty != null)
             {
-                originalTexture = mat.GetTexture(resolvedProperty);
+                originalTexture = originalMaterial.GetTexture(resolvedProperty);
             }
 
             if (useMaterialPropertyBlock)
@@ -119,6 +129,9 @@ namespace VRLicensing
             {
                 licenseManager.OnBrandingLogoReady -= HandleBrandingLogoReady;
             }
+
+            // Safety net: the renderer gets its own material back and the copy is released.
+            RestoreOriginal();
         }
 
         private void HandleBrandingLogoReady(Texture2D texture, Sprite sprite)
@@ -133,15 +146,24 @@ namespace VRLicensing
             }
         }
 
-        private void ApplyLogo(Texture2D logo)
+        /// <summary>
+        /// Shows <paramref name="logo"/> on this surface (what the applier does by itself when the
+        /// license manager has one). The material asset is not touched.
+        /// </summary>
+        public void ApplyLogo(Texture2D logo)
         {
+            if (logo == null)
+            {
+                RestoreOriginal();
+                return;
+            }
             if (!fitLogo)
             {
                 ApplyTexture(logo);
                 return;
             }
 
-            Material mat = SharedMaterial();
+            Material mat = originalMaterial != null ? originalMaterial : SharedMaterial();
             bool keepAlpha = background == Background.Transparent ||
                              (background == Background.Auto && BrandingTexture.DrawsAlpha(mat));
             float aspect = aspectOverride > 0f
@@ -157,7 +179,17 @@ namespace VRLicensing
         {
             if (targetRenderer == null) return;
 
-            resolvedProperty = BrandingTexture.ResolveProperty(SharedMaterial(), texturePropertyName);
+            // Somebody gave the renderer another material at runtime: that one is the original now.
+            Material current = SharedMaterial();
+            if (current != null && !ReferenceEquals(current, brandedMaterial) && !ReferenceEquals(current, originalMaterial)
+                && !BrandingMaterials.IsCopy(current))
+            {
+                originalMaterial = current;
+                originalTexture = null;
+            }
+            if (originalMaterial == null) originalMaterial = current;
+
+            resolvedProperty = BrandingTexture.ResolveProperty(originalMaterial, texturePropertyName);
             if (resolvedProperty == null)
             {
                 Debug.LogWarning($"[BrandingMeshApplier] Material {materialIndex} on '{gameObject.name}' has none of " +
@@ -183,11 +215,15 @@ namespace VRLicensing
             }
             else
             {
-                // Direct material modification (creates a material instance)
-                if (materialIndex < targetRenderer.materials.Length)
+                // A runtime copy of the material carries the texture; the asset is only read.
+                Material[] materials = targetRenderer.sharedMaterials;
+                if (materialIndex >= 0 && materialIndex < materials.Length)
                 {
-                    Material mat = targetRenderer.materials[materialIndex];
-                    mat.SetTexture(resolvedProperty, texture);
+                    Material next = BrandingMaterials.Acquire(originalMaterial, resolvedProperty, texture);
+                    materials[materialIndex] = next;
+                    targetRenderer.sharedMaterials = materials;
+                    BrandingMaterials.Release(brandedMaterial);
+                    brandedMaterial = next;
                 }
             }
 
@@ -199,11 +235,36 @@ namespace VRLicensing
         }
 
         /// <summary>
-        /// Restores the original texture that was on the material before branding was applied.
+        /// Takes the branding off: the property block is cleared, or the renderer gets back the
+        /// material it had, untouched, and the runtime copy is released.
         /// </summary>
         public void RestoreOriginal()
         {
-            ApplyTexture(useMaterialPropertyBlock ? null : originalTexture);
+            if (targetRenderer == null)
+            {
+                BrandingMaterials.Release(brandedMaterial);
+                brandedMaterial = null;
+                return;
+            }
+
+            if (useMaterialPropertyBlock)
+            {
+                if (propertyBlock == null) return;
+                propertyBlock.Clear();
+                targetRenderer.SetPropertyBlock(propertyBlock, materialIndex);
+                return;
+            }
+
+            if (ReferenceEquals(brandedMaterial, null)) return;
+            Material[] materials = targetRenderer.sharedMaterials;
+            if (originalMaterial != null && materialIndex >= 0 && materialIndex < materials.Length &&
+                (materials[materialIndex] == null || ReferenceEquals(materials[materialIndex], brandedMaterial)))
+            {
+                materials[materialIndex] = originalMaterial;
+                targetRenderer.sharedMaterials = materials;
+            }
+            BrandingMaterials.Release(brandedMaterial);
+            brandedMaterial = null;
         }
     }
 }
